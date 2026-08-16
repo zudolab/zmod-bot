@@ -12,7 +12,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:build": "node --experimental-transform-types --disable-warning=ExperimentalWarning scripts/build-seed-migration.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260807.2",
