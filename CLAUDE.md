@@ -54,6 +54,11 @@ Build plan and the full sub-issue breakdown: issue #1.
   straight to D1's `exec()` throws `D1_EXEC_ERROR: incomplete input`. Split on `;`, collapse each
   statement to one line, `exec()` one at a time. Safe here because all 34 seed reference bodies
   contain zero semicolons — verified; keep it that way.
+- **Never use `--` line comments in a migration.** Verified empirically against Miniflare during
+  #3: once the newline-collapse above folds newlines to spaces, a `--` comment swallows the rest of
+  the statement and it silently truncates — no error, just a missing table. Use `/* */` block
+  comments instead. `migrations/0001_init.sql` is written this way; keep every later migration
+  (including the generated seed migration) the same.
 - **Pin crypto and absence assertions to something outside the code under test.** A sign-then-verify
   round trip passes even when the base string is built wrong, and an absence assertion can be tripped
   by its own fixture. Use independently-computed known-answer vectors (see #6), and grep
