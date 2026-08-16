@@ -54,6 +54,7 @@ import type { ProductRef } from "../refs/model";
 import {
   buildMissingRefBlocks,
   buildMessagePayload,
+  buildReplyBlocks,
   buildReplyMessagePayload,
   escapeMrkdwn,
   type SlackMessagePayload,
@@ -69,6 +70,8 @@ import {
   type ParsedCommand,
 } from "../slack/commands";
 import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
+import { buildRefCommandPayload } from "../refs/commands";
+import { polishText as defaultPolishText, type PolishDeps, type PolishInput, type PolishResult } from "../reply/polish";
 import { formatArrivalSchedule } from "../reply/templates";
 import type { FetchLike, NowFn, SleepFn } from "../types";
 import {
@@ -91,6 +94,8 @@ export interface RunDeliveryPassDeps {
   sleep?: SleepFn;
   /** Injected compose step — defaults to the real src/reply/compose.ts composeReply. See ComposeReplyFn. */
   composeReply?: ComposeReplyFn;
+  /** Injected polish step — defaults to the real src/reply/polish.ts polishText. See PolishFn. */
+  polishText?: PolishFn;
 }
 
 export interface RunDeliveryPassResult {
@@ -104,7 +109,16 @@ export interface RunDeliveryPassResult {
  * RunDeliveryPassDeps that doesn't include `env` (passed separately,
  * since it also carries bindings like `DB`).
  */
-export type RunJobDeps = { fetch: FetchLike; now: NowFn; sleep?: SleepFn; composeReply?: ComposeReplyFn };
+/** Injected the same way as ComposeReplyFn, so tests never reach a provider. */
+export type PolishFn = (deps: PolishDeps, input: PolishInput) => Promise<PolishResult>;
+
+export type RunJobDeps = {
+  fetch: FetchLike;
+  now: NowFn;
+  sleep?: SleepFn;
+  composeReply?: ComposeReplyFn;
+  polishText?: PolishFn;
+};
 
 /**
  * Strips a leading `<@BOT_ID>` mention, matching src/slack/events.ts
@@ -237,6 +251,47 @@ async function buildReplyJobPayload(
  * between "the text is composed" and "the D1 write says so" replays as a
  * second post attempt, never a silent loss).
  */
+/**
+ * `@bot polish` + pasted Japanese. Issue #16 owns the transformation
+ * (src/reply/polish.ts); this only turns its result into a message.
+ *
+ * The visible "unavailable" note is not decoration. On any guard trip
+ * polishText returns the input **unchanged**, byte for byte — so without a
+ * note the operator sees their own text in a code block and has no way to
+ * tell it was never polished. That text gets pasted into Mercari verbatim,
+ * which makes "looks polished but is not" the failure worth spending a
+ * block on. `usedFallback` is the only signal, since the text itself is
+ * identical by design.
+ */
+async function buildPolishJobPayload(env: Env, job: JobRow, deps: RunJobDeps): Promise<SlackMessagePayload> {
+  const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
+  if (parsed.kind !== "polish") {
+    // classifyJobKind said "polish" but the grammar disagrees — report the
+    // parser's own Japanese explanation rather than a stack trace.
+    const reason = parsed.kind === "unknown" ? parsed.reason : USAGE_TEXT;
+    return buildTextMessagePayload(reason, "推敲コマンドを解釈できませんでした");
+  }
+
+  const polish = deps.polishText ?? defaultPolishText;
+  const result = await polish({ env, fetch: deps.fetch, now: deps.now }, { text: parsed.text });
+
+  const blocks = buildReplyBlocks(result.text);
+  if (!result.usedFallback) {
+    return buildMessagePayload(blocks, "推敲しました");
+  }
+  return buildMessagePayload(
+    [
+      {
+        type: "section",
+        block_id: "polish_fallback_notice",
+        text: { type: "mrkdwn", text: "推敲を実行できませんでした。以下は *元のテキストそのまま* です。" },
+      },
+      ...blocks,
+    ],
+    "推敲できませんでした（元のテキストを表示）",
+  );
+}
+
 async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<void> {
   let payload: SlackMessagePayload;
   switch (job.kind) {
@@ -246,14 +301,15 @@ async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<
       payload = await buildReplyJobPayload(env, job, resolved, deps);
       break;
     }
-    case "polish":
-    case "ref":
-      // Neither has an implementation yet (issues #16 and #17). A job of
-      // this kind can already exist in production today — src/slack/
-      // events.ts classifyJobKind recognizes both keywords — so this is
-      // a real, expected failure mode until those issues land, not a
-      // bug: it fails, retries per the normal policy, then goes dead.
-      throw new Error(`runJob: job kind "${job.kind}" is not implemented yet (see issues #16/#17)`);
+    case "polish": {
+      payload = await buildPolishJobPayload(env, job, deps);
+      break;
+    }
+    case "ref": {
+      const repoDeps: RepoDeps = { db: env.DB, now: deps.now };
+      payload = await buildRefCommandPayload(env, repoDeps, job);
+      break;
+    }
   }
 
   const slackDeps: SlackApiDeps = {
@@ -408,6 +464,11 @@ export async function runDeliveryPass(deps: RunDeliveryPassDeps): Promise<RunDel
       now: deps.now,
       sleep: deps.sleep,
       composeReply: deps.composeReply,
+      // Every dep is forwarded by name here, so a new one added to
+      // RunDeliveryPassDeps is silently dropped unless it is listed —
+      // there is no type error, the real implementation just runs and
+      // tests quietly exercise the provider instead of their fake.
+      polishText: deps.polishText,
     });
     if (ok) succeeded++;
     else failed++;

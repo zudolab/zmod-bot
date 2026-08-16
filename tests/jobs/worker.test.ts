@@ -342,22 +342,71 @@ describe("delivery worker (issue #10)", () => {
     expect(blocksText).not.toContain("rich_text_preformatted");
   });
 
-  it("polish/ref job kinds fail with a clear not-implemented-yet error (issues #16/#17)", async () => {
+  it("polish job posts the polished text", async () => {
     await setup();
-    const job = await seedReplyJob("ev-polish", "<@U0BOT1> polish something");
-    // recordIncomingEvent's kind param drives this, not the raw_text --
-    // stamp it directly to exercise runJob's kind dispatch.
+    const job = await seedReplyJob("ev-polish", "<@U0BOT1> polish\nお世話になります。");
     await env!.db.prepare("UPDATE jobs SET kind = 'polish' WHERE id = ?").bind(job.id).run();
+    const { fetch, calls } = createFakeFetch();
+    const polishText = async () => ({ text: "polished!", usedFallback: false, fallback: null });
+
+    const result = await runDeliveryPass({
+      env: fakeEnv,
+      fetch,
+      now: () => new Date(clockMs),
+      sleep: noWaitSleep(),
+      polishText,
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify(calls[0]?.body)).toContain("polished!");
+  });
+
+  /**
+   * On any guard trip polishText returns the input byte-for-byte unchanged,
+   * so the text alone cannot tell the operator whether polishing happened.
+   * Without the notice they would paste their own unpolished text into
+   * Mercari believing it had been rewritten -- the notice is the only
+   * signal, which is why it is asserted rather than assumed.
+   */
+  it("polish job that fell back posts the unchanged text WITH a visible notice", async () => {
+    await setup();
+    const original = "お世話になります。";
+    const job = await seedReplyJob("ev-polish-fb", `<@U0BOT1> polish\n${original}`);
+    await env!.db.prepare("UPDATE jobs SET kind = 'polish' WHERE id = ?").bind(job.id).run();
+    const { fetch, calls } = createFakeFetch();
+    const polishText = async () => ({
+      text: original,
+      usedFallback: true,
+      fallback: { guard: "call" as const, reason: "timeout" as const, detail: "deadline" },
+    });
+
+    const result = await runDeliveryPass({
+      env: fakeEnv,
+      fetch,
+      now: () => new Date(clockMs),
+      sleep: noWaitSleep(),
+      polishText,
+    });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
+    const body = JSON.stringify(calls[0]?.body);
+    expect(body).toContain("polish_fallback_notice");
+    expect(body).toContain(original);
+  });
+
+  it("ref job routes to the reference-command handler instead of failing", async () => {
+    await setup();
+    const job = await seedReplyJob("ev-ref", "<@U0BOT1> ref show nothing-here");
+    await env!.db.prepare("UPDATE jobs SET kind = 'ref' WHERE id = ?").bind(job.id).run();
     const { fetch, calls } = createFakeFetch();
 
     const result = await runDeliveryPass({ env: fakeEnv, fetch, now: () => new Date(clockMs), sleep: noWaitSleep() });
 
-    expect(result).toEqual({ claimed: 1, succeeded: 0, failed: 1 });
-    expect(calls).toHaveLength(0);
-    const row = await env!.db.prepare("SELECT last_error FROM jobs WHERE id = ?").bind(job.id).first<{
-      last_error: string | null;
-    }>();
-    expect(row?.last_error).toContain("not implemented yet");
+    // The slug does not resolve, so the handler answers rather than throwing --
+    // the point is that "ref" no longer dead-ends in the dispatch switch.
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(calls).toHaveLength(1);
   });
 
   it("runJob alone (no claim/state bookkeeping) composes and posts for a reply job", async () => {
