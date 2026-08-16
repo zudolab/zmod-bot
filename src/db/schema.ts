@@ -1,74 +1,126 @@
 /**
- * D1 table row shapes. The authoritative SQL schema lives in `migrations/`
- * (added by issue #3); this file is the TypeScript mirror that
- * src/db/repos.ts and the domain modules import against, so a schema
- * drift between the two shows up as a typecheck failure instead of a
- * runtime surprise.
+ * D1 table row shapes. The authoritative SQL schema lives in
+ * `migrations/` (`migrations/0001_init.sql`); this file is the
+ * TypeScript mirror that src/db/repos.ts and the domain modules import
+ * against, so a schema drift between the two shows up as a typecheck
+ * failure instead of a runtime surprise.
  *
  * Table set and the jobs state machine are fixed by epic issue #1's
- * "Durable job semantics" section — do not rename columns without
- * updating that issue.
+ * "Durable job semantics" section and issue #3's schema — do not rename
+ * a column here without updating migrations/0001_init.sql (additive-only
+ * — CLAUDE.md) and this file together.
  */
 
-export type JobKind = "reply" | "ref_new" | "ref_refresh" | "ref_restore" | "polish";
+/** The DDL comment on product_refs.category is the only enum source — see migrations/0001_init.sql. */
+export type ProductCategory = "general" | "general (built) / diy (kit)" | "small";
 
-/** pending -> composing -> delivering -> done | failed | dead (see src/jobs/queue.ts). */
-export type JobState = "pending" | "composing" | "delivering" | "done" | "failed" | "dead";
+export interface ProductRefRow {
+  slug: string;
+  category: ProductCategory;
+  product_url: string | null;
+  /** The reference document, verbatim — see data/seed/README.md for the source format. */
+  body_md: string;
+  version: number;
+  /** Epoch milliseconds. */
+  updated_at: number;
+  /** 'seed' | a Slack user id. */
+  updated_by: string;
+}
 
-export interface JobRow {
+/** The resolver's (issue #8) lookup key — normalized alias text to the slug it resolves to. */
+export interface ProductRefAliasRow {
+  alias_norm: string;
+  slug: string;
+}
+
+export type ProductRefVersionSource = "seed" | "authored" | "refreshed" | "restored";
+
+/** One row per edit — how `ref refresh` / `ref restore` recover a prior version (CLAUDE.md "Conventions"). */
+export interface ProductRefVersionRow {
+  id: number;
+  slug: string;
+  version: number;
+  body_md: string;
+  category: ProductCategory;
+  product_url: string | null;
+  created_at: number;
+  created_by: string;
+  source: ProductRefVersionSource;
+}
+
+/**
+ * A pending authoring edit awaiting Slack approval (epic issue #1 point
+ * 8, "writes are gated"). Previews persist here — with an expiry and an
+ * expected `base_version` — rather than as a button payload, since
+ * Slack's `value` caps at 2000 chars and a stale approval must not
+ * clobber a concurrent edit.
+ */
+export interface RefDraftRow {
   id: string;
-  /** Slack event id — UNIQUE, the de-dup key for at-least-once delivery. */
-  event_id: string;
-  kind: JobKind;
-  channel_id: string;
-  thread_ts: string | null;
-  actor_user_id: string;
-  raw_text: string;
-  state: JobState;
-  attempts: number;
-  claim_token: string | null;
-  claim_expires_at: string | null;
-  last_error: string | null;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
+  slug: string;
+  body_md: string;
+  category: ProductCategory;
+  product_url: string | null;
+  /** NULL for a brand-new ref; else the version this draft was edited against. */
+  base_version: number | null;
+  created_at: number;
+  created_by: string;
+  expires_at: number;
+  consumed_at: number | null;
 }
 
 /** Written in the same db.batch() as the jobs row, ON CONFLICT DO NOTHING — the de-dup half of the durable-intent write. */
 export interface SlackEventReceiptRow {
   event_id: string;
-  received_at: string;
+  event_type: string;
+  received_at: number;
 }
 
-export type ProductCategory = "general" | "diy" | "small";
+export type JobKind = "reply" | "polish" | "ref";
 
-export interface ProductRefRow {
-  slug: string;
-  name: string;
-  category: ProductCategory;
-  product_url: string;
-  /** JSON-encoded string[] — see src/refs/model.ts ProductRef.aliases for the decoded shape. */
-  aliases: string;
-  /** Full reference markdown body, in the format documented at data/seed/README.md. */
-  body: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
+/** pending -> composing -> delivering -> done | failed | dead (see src/jobs/queue.ts). */
+export type JobState = "pending" | "composing" | "delivering" | "done" | "failed" | "dead";
+
+export interface JobRow {
+  id: number;
+  /** Slack event id — UNIQUE, the de-dup key for at-least-once delivery. */
+  event_id: string;
+  kind: JobKind;
+  channel_id: string;
+  thread_ts: string;
+  actor_user_id: string;
+  raw_text: string;
+  state: JobState;
+  attempts: number;
+  claim_token: string | null;
+  claim_expires_at: number | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
 }
 
-/** One row per edit — how `ref refresh` / `ref restore` recover a prior version (CLAUDE.md "Conventions"). */
-export interface ProductRefVersionRow {
-  id: string;
-  slug: string;
-  version: number;
-  body: string;
-  changed_by_user_id: string;
-  created_at: string;
+export type UsageTask = "compose" | "author" | "polish";
+
+export interface UsageLogRow {
+  id: number;
+  slug: string | null;
+  task: UsageTask;
+  provider: string;
+  model: string | null;
+  /** NULL on the happy path, else the reason token. */
+  fallback: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  created_at: number;
 }
 
 export const TABLE_NAMES = {
-  jobs: "jobs",
-  slackEventReceipts: "slack_event_receipts",
   productRefs: "product_refs",
+  productRefAliases: "product_ref_aliases",
   productRefVersions: "product_ref_versions",
+  refDrafts: "ref_drafts",
+  slackEventReceipts: "slack_event_receipts",
+  jobs: "jobs",
+  usageLog: "usage_log",
 } as const;
