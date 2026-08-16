@@ -286,6 +286,19 @@ export interface ButtonValueEnvelope {
   id: string;
   /** Action-specific argument, e.g. an encoded arrival option, a chosen candidate slug, or "built"/"kit". */
   a?: string;
+  /**
+   * A disambiguation choice carried forward into a chained arrival-date
+   * picker (see encodePriorChoice) — issue #12: a `variant_pick` or
+   * `candidate_pick` click for a product that *also* needs an arrival
+   * date chains into buildArrivalPickerPayload using the same `jobId`.
+   * Without this, the arrival_pick click that follows re-derives the
+   * product from the job's original (still-ambiguous) raw text via
+   * resolveProductRef and silently loses the earlier choice — for
+   * variant_pick specifically, that means composing as "built" even when
+   * the customer just clicked "kit". `job.raw_text` never changes across
+   * this chain, so the choice has nowhere else to live.
+   */
+  p?: string;
 }
 
 /** Throws rather than silently truncating — an oversized envelope is a bug in the caller, not something to ship a corrupted button over. */
@@ -311,7 +324,40 @@ export function decodeButtonValue(raw: string): ButtonValueEnvelope | null {
   const record = parsed as Record<string, unknown>;
   if (record.v !== 1 || typeof record.id !== "string" || record.id === "") return null;
   if (record.a !== undefined && typeof record.a !== "string") return null;
-  return record.a === undefined ? { v: 1, id: record.id } : { v: 1, id: record.id, a: record.a };
+  if (record.p !== undefined && typeof record.p !== "string") return null;
+  return {
+    v: 1,
+    id: record.id,
+    ...(record.a === undefined ? {} : { a: record.a as string }),
+    ...(record.p === undefined ? {} : { p: record.p as string }),
+  };
+}
+
+/**
+ * Encodes a variant_pick/candidate_pick choice for ButtonValueEnvelope's
+ * `p` field — see that field's doc comment for why this needs to exist at
+ * all. A tagged string rather than a second pair of fields: a job is
+ * ambiguous in exactly one way at a time (resolveProductRef's result is a
+ * single discriminated kind), so there is never a "both" case to encode.
+ */
+export function encodePriorChoice(
+  choice: { kind: "variant"; variant: "built" | "kit" } | { kind: "candidate"; slug: string },
+): string {
+  return choice.kind === "variant" ? `variant:${choice.variant}` : `candidate:${choice.slug}`;
+}
+
+/** The inverse of encodePriorChoice. Returns `{}` (never throws) for `undefined` or anything malformed — a stale/tampered button click must never crash the interactions route. */
+export function decodePriorChoice(raw: string | undefined): { variant?: "built" | "kit"; candidateSlug?: string } {
+  if (raw === undefined) return {};
+  if (raw.startsWith("variant:")) {
+    const variant = raw.slice("variant:".length);
+    return variant === "built" || variant === "kit" ? { variant } : {};
+  }
+  if (raw.startsWith("candidate:")) {
+    const slug = raw.slice("candidate:".length);
+    return slug === "" ? {} : { candidateSlug: slug };
+  }
+  return {};
 }
 
 /* -------------------------------------------------------------------------
@@ -336,9 +382,17 @@ export const ACTION_IDS = {
  * product needs an arrival date but none was given in the mention text.
  * `small`-category products never reach this — the caller skips the
  * question entirely for those (issue #14).
+ *
+ * `priorChoice` (see ButtonValueEnvelope.p / encodePriorChoice) is set
+ * only when this picker is posted *after* a variant_pick/candidate_pick
+ * click already resolved which product/variant is meant — src/slack/
+ * interactions.ts's finishReplyAfterInteraction chains into this same
+ * function for that case. It must be carried on every button here so the
+ * arrival_pick click that follows doesn't lose it.
  */
-export function buildArrivalPickerPayload(jobId: number, now: () => Date): SlackMessagePayload {
+export function buildArrivalPickerPayload(jobId: number, now: () => Date, priorChoice?: string): SlackMessagePayload {
   const options = computeArrivalPresetOptions(now);
+  const priorArg = priorChoice === undefined ? {} : { p: priorChoice };
   const promptBlock = {
     type: "section",
     block_id: "arrival_prompt",
@@ -349,7 +403,7 @@ export function buildArrivalPickerPayload(jobId: number, now: () => Date): Slack
     actionId: ACTION_IDS.arrivalPick,
     options: options.map((option) => ({
       label: option.buttonLabel,
-      value: encodeButtonValue({ v: 1, id: String(jobId), a: encodeArrivalOptionArg(option) }),
+      value: encodeButtonValue({ v: 1, id: String(jobId), a: encodeArrivalOptionArg(option), ...priorArg }),
     })),
   });
   const otherBlock = {
@@ -360,7 +414,7 @@ export function buildArrivalPickerPayload(jobId: number, now: () => Date): Slack
         type: "button",
         action_id: ACTION_IDS.arrivalOther,
         text: { type: "plain_text", text: "その他", emoji: true },
-        value: encodeButtonValue({ v: 1, id: String(jobId) }),
+        value: encodeButtonValue({ v: 1, id: String(jobId), ...priorArg }),
       },
     ],
   };
