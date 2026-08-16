@@ -148,7 +148,18 @@ describe("every rendered reply", () => {
     }
   });
 
-  it("never leaks a section heading or an editorial prose note", () => {
+  /**
+   * `Notes` / `Notes (additional)` prose is editorial — written to whoever
+   * composes the reply — so it must never reach a customer. Prose under any
+   * other heading is customer-facing and must be emitted. Across the frozen
+   * corpus this splits 21/1: the sole non-editorial prose section is
+   * zudo-3u-to-1u's `Usage Guide (取り付け方法)`, whose installation
+   * instructions a buyer of that product needs. Asserting both directions
+   * keeps a future "drop all prose" regression from passing silently.
+   */
+  it("leaks no section heading, omits editorial prose, and keeps customer-facing prose", () => {
+    let customerFacingProseChecked = 0;
+
     for (const one of [...cases, ...variantCases]) {
       const rendered = render(one);
       const parsed = ref(one.slug);
@@ -157,11 +168,25 @@ describe("every rendered reply", () => {
         expect(rendered, `${one.name}: leaked the "${section.heading}" heading`).not.toContain(
           `## ${section.heading}`,
         );
-        if (section.prose !== undefined) {
+        if (section.prose === undefined) continue;
+
+        const editorial = section.heading === "Notes" || section.heading === "Notes (additional)";
+        if (editorial) {
           expect(rendered, `${one.name}: leaked editorial prose`).not.toContain(section.prose);
+          continue;
         }
+        if (section.gate === "diy-only" && one.purchased !== "kit") continue;
+        expect(
+          rendered,
+          `${one.name}: dropped customer-facing prose under "${section.heading}"`,
+        ).toContain(section.prose);
+        customerFacingProseChecked += 1;
       }
     }
+
+    // Guards the assertion above against becoming vacuous if the corpus or
+    // the case list changes shape.
+    expect(customerFacingProseChecked).toBeGreaterThan(0);
   });
 });
 

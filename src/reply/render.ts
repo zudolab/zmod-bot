@@ -10,16 +10,21 @@
  * the same bytes — which is what lets the golden corpus in
  * tests/reply/golden.test.ts be an oracle rather than a moving target.
  *
- * **Section `prose` is never emitted.** It is editorial notes addressed
- * to whoever composes the reply, not customer-facing text — x0x-heart's
- * "Hand-built by Takazudo Modular. Add a note asking the customer to
- * contact if anything seems wrong." and oxi-pipe-mk2's "do NOT include
- * any intro/explanation" are both prose. A minority of prose *is*
- * customer-facing Japanese (zudo-3u-to-1u's 取り付け方法), and no
- * deterministic rule separates the two; shipping an English instruction
- * to a customer is far worse than omitting a usage note, so the fallback
- * path drops all of it. Using prose as guidance is the LLM path's job
- * (issue #13).
+ * **Section `prose` is emitted unless the heading is `Notes` or
+ * `Notes (additional)`.** Those two headings are editorial — addressed to
+ * whoever composes the reply, never to the customer (x0x-heart's "Hand-built
+ * by Takazudo Modular. Add a note asking the customer to contact if anything
+ * seems wrong." and oxi-pipe-mk2's "do NOT include any intro/explanation").
+ * Everything else is customer-facing.
+ *
+ * The heading split is the deterministic rule, verified against the frozen
+ * corpus: of the 22 sections carrying prose, 21 are `Notes` / `Notes
+ * (additional)` and exactly one is not — zudo-3u-to-1u's
+ * `Usage Guide (取り付け方法)`, which is Japanese installation instructions a
+ * buyer of that product needs. Dropping all prose (the previous behaviour)
+ * silently shipped that product's reply without them. Feeding `Notes*` prose
+ * to the model as guidance is still the LLM path's job (issue #13); this
+ * renderer never emits it.
  */
 import type { ProductRef, RefLiteralBlock, RefResource, RefSection } from "../refs/model";
 import {
@@ -206,13 +211,14 @@ function isBuildGuideSection(section: RefSection): boolean {
  * the links, and every link broken across two lines.
  *
  * Returns null for a section with nothing to say — a Notes section is
- * all prose, and prose is not emitted.
+ * all prose, and `Notes*` prose is not emitted.
  */
 function renderSection(section: RefSection, variantText: string | undefined): string | null {
   const paragraphs: string[] = [];
 
   if (section.separatorIntro !== undefined) paragraphs.push(section.separatorIntro);
   if (section.introText !== undefined) paragraphs.push(section.introText);
+  if (section.prose !== undefined && !isEditorialHeading(section.heading)) paragraphs.push(section.prose);
   if (section.resources.length > 0) paragraphs.push(section.resources.map(renderResource).join("\n"));
   for (const block of section.literalBlocks) {
     if (includesLiteralBlock(block, variantText)) paragraphs.push(block.text);
@@ -235,6 +241,15 @@ function renderSection(section: RefSection, variantText: string | undefined): st
  * blocks carry no colon, but those are literal text, not lines derived
  * from a `- Title: URL` bullet.)
  */
+/**
+ * `Notes` and `Notes (additional)` are the reference corpus's two editorial
+ * headings: their prose instructs whoever composes the reply and must never
+ * reach a customer. Every other heading's prose is customer-facing.
+ */
+function isEditorialHeading(heading: string): boolean {
+  return heading === "Notes" || heading === "Notes (additional)";
+}
+
 function renderResource(resource: RefResource): string {
   return `${resource.title}:\n${resource.url}`;
 }
