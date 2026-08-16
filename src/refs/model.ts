@@ -21,9 +21,6 @@
  */
 export type RefCategory = "general" | "general-diy" | "small";
 
-/** @deprecated Use {@link RefCategory}. Kept so src/reply/templates.ts keeps compiling. */
-export type ProductCategory = RefCategory;
-
 /**
  * The category spelling used in the markdown source, keyed by the parsed
  * value — the parse/serialize round trip and the seed importer both need

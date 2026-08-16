@@ -5,7 +5,7 @@
  * `--direct` / `--discord` variant wording) is issue #7's
  * responsibility.
  */
-import type { ProductCategory } from "../refs/model";
+import type { RefCategory } from "../refs/model";
 
 export interface ReplyTemplateSet {
   /** Opening line(s) before the shipping line. */
@@ -31,6 +31,6 @@ export interface ReplyVariant {
 }
 
 /** Returns the fixed-clause set for a category + flag combination. */
-export function getTemplateSet(category: ProductCategory, variant: ReplyVariant): ReplyTemplateSet {
+export function getTemplateSet(category: RefCategory, variant: ReplyVariant): ReplyTemplateSet {
   throw new Error("not implemented: getTemplateSet");
 }
