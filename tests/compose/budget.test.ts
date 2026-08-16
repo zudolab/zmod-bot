@@ -18,11 +18,7 @@ import type { Env } from "../../src/env";
 import { checkBudgetGuard, countComposeCallsToday, utcDayStartMs } from "../../src/llm/guards";
 import type { UsageTask } from "../../src/db/schema";
 import { parseProductRefMarkdown } from "../../src/refs/parse";
-import {
-  composeReply,
-  withCustomerFacingProse,
-  type ComposeReplyDeps,
-} from "../../src/reply/compose";
+import { composeReply, type ComposeReplyDeps } from "../../src/reply/compose";
 import { renderResourceSectionDeterministic } from "../../src/reply/render";
 import type { FetchLike } from "../../src/types";
 import { createTestEnv, type TestEnvHandle } from "../helpers/test-env";
@@ -45,7 +41,7 @@ Intro text: 詳しい使い方については、当店サイトの紹介記事�
 `;
 
 const productRef = parseProductRefMarkdown({ slug: "budget-fixture", markdown: PRODUCT_MARKDOWN });
-const FAITHFUL_SECTION = renderResourceSectionDeterministic(withCustomerFacingProse(productRef).ref);
+const FAITHFUL_SECTION = renderResourceSectionDeterministic(productRef);
 
 const NOON = new Date("2026-08-18T12:00:00Z");
 

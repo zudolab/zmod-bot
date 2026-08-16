@@ -20,10 +20,18 @@
  * non-negotiable.
  *
  * **Structural equivalence is by construction, not by convention.** The
- * deterministic section is rendered first, and the set of URLs and
- * literal blocks the composed section is then held to is derived from
- * *that string*. There is no second copy of the gating rules for the two
- * paths to drift apart on.
+ * deterministic section is rendered first, and everything the composed
+ * section is then held to — its URLs, its literal blocks, the prose it
+ * may not emit — is derived from *that string*. There is no second copy
+ * of the gating rules for the two paths to drift apart on.
+ *
+ * **The section-prose split belongs to the renderer.** src/reply/render.ts
+ * decides which prose is customer-facing and which is editorial
+ * (`Notes` / `Notes (additional)`). This module owns only the other half
+ * issue #13 was given: handing the editorial prose to the model as
+ * guidance — addac107's note is a direct instruction about what not to
+ * include, which is exactly what it is for — while guaranteeing the
+ * model never emits a word of it.
  */
 import { appendUsageLog, type RepoDeps } from "../db/repos";
 import type { Env } from "../env";
@@ -108,29 +116,13 @@ export interface ComposeReplyResult {
   fallback?: ComposeFallback | null;
   /** Which adapter was selected, whether or not it was reached. */
   provider?: LlmProviderId;
-  /** The model that actually served the call, when one completed. */
+  /**
+   * The model that actually served the call, when one completed. Absent
+   * with `fallback: null` means no call was needed — the reference has
+   * no resources section to compose (see composeReply).
+   */
   model?: string;
 }
-
-/**
- * Headings whose prose is editorial — addressed to whoever composes the
- * reply, not to the customer — and is therefore withheld from the
- * message on both paths.
- *
- * Every prose-bearing section in the frozen corpus is `Notes`, `Notes
- * (additional)`, or zudo-3u-to-1u's `Usage Guide (取り付け方法)`, and the
- * first two are exactly the editorial ones (addac107's Notes
- * (additional) is a literal instruction to the composer: "so do NOT add
- * an Extra Resources section to the message"). So the rule is: withhold
- * `Notes*`, emit everything else.
- *
- * Matched as a heading *prefix* rather than an exact set. D1 refs are
- * authored at runtime (`ref new` / `ref refresh`), so a future `Notes
- * (internal)` is possible, and the failure direction matters: omitting a
- * usage note is recoverable, shipping an English instruction to a
- * customer is not.
- */
-const EDITORIAL_HEADING = /^notes\b/i;
 
 /** `{arrival_schedule}`, `{product_name}` — see src/reply/templates.ts. */
 const TEMPLATE_SLOT = /\{[a-z_]+\}/g;
@@ -170,6 +162,20 @@ export async function composeReply(
   // `general` reply with no arrival sentence), and it throws before a
   // single token is spent.
   const fallbackText = assemble(prepared, input.arrivalSchedule, prepared.resourceSection);
+
+  // Three references in the corpus (ai-mult, oxi-pipe-mk2, x0x-heart)
+  // carry nothing but editorial `Notes`, so their resources section is
+  // empty by design — ai-mult's own note says it outright: "no product
+  // resources / guide links are needed in the reply — just the base
+  // template". There is nothing for a model to assemble, and asking one
+  // to assemble nothing can only return something the output guard then
+  // rejects. No call, no `usage_log` row: nothing was spent.
+  if (prepared.resourceSection.trim() === "") {
+    log("info", "compose: reference has no resources section, skipping the provider", {
+      slug: input.ref.slug,
+    });
+    return { text: fallbackText, usedFallback: false, fallback: null, provider: provider.id };
+  }
 
   const fallback = async (trip: GuardTrip, result: LlmResult | null): Promise<ComposeReplyResult> => {
     log("warn", "compose: falling back to the deterministic renderer", {
@@ -252,12 +258,12 @@ interface PreparedReply {
   resourceSection: string;
   expectedUrls: string[];
   requiredLiterals: string[];
-  /** `Notes*` prose: guidance for the model, never output. */
+  /** Prose the renderer withheld: guidance the model may read, never text it may emit. */
   withheldProse: string[];
 }
 
 function prepare(input: ComposeReplyInput): PreparedReply {
-  const { ref, withheldProse } = withCustomerFacingProse(input.ref);
+  const ref = input.ref;
   const kind = templateKindFor(ref.category, input.purchased ?? "built");
   const flags: ReplyFlags = { direct: input.direct, discord: input.discord };
   const diy = kind === "diy";
@@ -280,7 +286,17 @@ function prepare(input: ComposeReplyInput): PreparedReply {
       .flatMap((section) => section.literalBlocks)
       .map((block) => block.text)
       .filter((text) => resourceSection.includes(text)),
-    withheldProse,
+    // Whatever prose the renderer chose not to emit — the `Notes*`
+    // editorial paragraphs (src/reply/render.ts `isEditorialHeading`),
+    // plus the prose of any section this purchase gates away. Read off
+    // the rendered string rather than re-testing the heading, so the
+    // renderer stays the single authority on which prose is editorial:
+    // a copy of that predicate here could drift into forbidding text
+    // the deterministic path emits, which would fall back on every
+    // faithful completion.
+    withheldProse: ref.sections
+      .map((section) => section.prose)
+      .filter((prose): prose is string => prose !== undefined && !resourceSection.includes(prose)),
   };
 }
 
@@ -293,49 +309,6 @@ function assemble(prepared: PreparedReply, arrivalSchedule: string | null, resou
     resourceSection,
     ...(prepared.variantText === undefined ? {} : { variantText: prepared.variantText }),
   });
-}
-
-/**
- * Applies the section-prose rule (issue #13) to a reference, returning
- * the rewritten ref and the prose it withheld.
- *
- * `renderResourceSectionDeterministic` emits `introText` and drops
- * `prose`, so customer-facing prose is promoted into `introText` —
- * which the domain model defines as exactly that ("prose emitted above
- * this section's links"), so this is the right field and not a trick.
- * The live case is zudo-3u-to-1u's `## Usage Guide (取り付け方法)`:
- * pure customer-facing installation instructions that today render to
- * nothing, so a customer buying it gets a reply with the installation
- * steps silently missing.
- *
- * Editorial `Notes*` prose is stripped instead and handed back for the
- * prompt, where it is genuine guidance, and for the output guard, which
- * rejects a completion that echoes it.
- *
- * Never mutates the input — the caller's ProductRef may be shared (the
- * golden corpus parses each file once).
- */
-export function withCustomerFacingProse(ref: ProductRef): { ref: ProductRef; withheldProse: string[] } {
-  const withheldProse: string[] = [];
-  let changed = false;
-
-  const sections = ref.sections.map((section): RefSection => {
-    if (section.prose === undefined) return section;
-    changed = true;
-
-    const { prose, ...rest } = section;
-    if (EDITORIAL_HEADING.test(section.heading.trim())) {
-      withheldProse.push(prose);
-      return rest;
-    }
-    // Ahead of an existing intro, matching the source order: the parser
-    // reads free prose where it sits under the heading, and `Intro
-    // text:` sits below the resource list.
-    const introText = rest.introText === undefined ? prose : `${prose}\n\n${rest.introText}`;
-    return { ...rest, introText };
-  });
-
-  return { ref: changed ? { ...ref, sections } : ref, withheldProse };
 }
 
 /* -------------------------------------------------------------------------

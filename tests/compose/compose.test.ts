@@ -27,7 +27,6 @@ import type { ProductRef } from "../../src/refs/model";
 import {
   composeReply,
   COMPOSE_MAX_TOKENS,
-  withCustomerFacingProse,
   type ComposeReplyDeps,
   type ComposeReplyInput,
 } from "../../src/reply/compose";
@@ -164,16 +163,12 @@ function usageRows(db: MockD1): Record<string, unknown>[] {
     }));
 }
 
-/**
- * The exact `{product_resources}` content the deterministic path
- * produces — what a perfectly faithful model would return. Applies the
- * section-prose rule first, exactly as composeReply does.
- */
+/** The exact `{product_resources}` content the deterministic path produces — what a perfectly faithful model would return. */
 function faithfulSection(
   slug: string,
   options: { diy?: boolean; variantText?: string } = {},
 ): string {
-  return renderResourceSectionDeterministic(withCustomerFacingProse(ref(slug)).ref, options);
+  return renderResourceSectionDeterministic(ref(slug), options);
 }
 
 function baseInput(slug: string, over: Partial<ComposeReplyInput> = {}): ComposeReplyInput {
@@ -251,7 +246,7 @@ describe("the composed path", () => {
     // wording inside the slot is the model's to choose.
     expect(result.text).toBe(
       renderDeterministicReply({
-        ref: withCustomerFacingProse(ref(SMALL_SLUG)).ref,
+        ref: ref(SMALL_SLUG),
         flags: { direct: false, discord: false },
         arrivalSchedule: null,
       }),
@@ -294,7 +289,7 @@ describe("the composed path", () => {
 describe("every guard trip falls back to the deterministic render", () => {
   const deterministic = (slug: string) =>
     renderDeterministicReply({
-      ref: withCustomerFacingProse(ref(slug)).ref,
+      ref: ref(slug),
       flags: { direct: false, discord: false },
       arrivalSchedule: null,
     });
@@ -525,7 +520,7 @@ describe("the fixed clauses are unreachable by the model", () => {
 
       const composed = await composeReply(deps, input);
       const fallbackText = renderDeterministicReply({
-        ref: withCustomerFacingProse(ref(slug)).ref,
+        ref: ref(slug),
         flags: { direct: false, discord: true },
         arrivalSchedule: arrival,
         ...(purchased === undefined ? {} : { purchased }),
@@ -595,43 +590,76 @@ describe("the section-prose rule", () => {
     expect(result.text).not.toContain(NOTES_PROSE);
   });
 
-  it("withholds every Notes* paragraph in the corpus, and nothing else", () => {
-    const emitted: string[] = [];
-    const withheld: string[] = [];
+  it("trips the guard when the model reproduces the guidance it was given", async () => {
+    // The other half of the rule, and the half that is this module's:
+    // the renderer keeps editorial prose out of the deterministic path,
+    // but only the output guard can keep it out of a completion.
+    const { ai } = createFakeAi({ text: `${faithfulSection(SMALL_SLUG)}\n\n${NOTES_PROSE}` });
+    const deps: ComposeReplyDeps = { env: createEnv({ AI: ai }), fetch: createFakeFetch().fetch };
 
-    for (const [, source] of refs) {
-      const { ref: rewritten, withheldProse } = withCustomerFacingProse(source);
-      withheld.push(...withheldProse);
-      for (const section of rewritten.sections) {
-        expect(section.prose).toBeUndefined();
-        const original = source.sections.find((s) => s.heading === section.heading)!;
-        if (original.prose !== undefined && !withheldProse.includes(original.prose)) {
-          emitted.push(section.heading);
-        }
-      }
-    }
+    const result = await composeReply(deps, baseInput(SMALL_SLUG));
 
-    // Exactly one section in the frozen corpus carries customer-facing
-    // prose. If this list grows, a new reference introduced prose under
-    // a non-Notes heading — check it is genuinely for the customer.
-    expect(emitted).toEqual(["Usage Guide (取り付け方法)"]);
-    expect(withheld).not.toHaveLength(0);
-    expect(
-      withheld.filter((prose) =>
-        [...refs.values()].some((r) =>
-          r.sections.some((s) => s.prose === prose && !/^notes\b/i.test(s.heading)),
-        ),
-      ),
-    ).toEqual([]);
+    expect(result.fallback).toMatchObject({ guard: "output", reason: "schema_invalid" });
+    expect(result.text).not.toContain(NOTES_PROSE);
   });
 
-  it("does not mutate the reference it is given", () => {
-    const source = ref(SMALL_SLUG);
-    const before = JSON.stringify(source);
+  /**
+   * ai-mult's own Notes: "For the **built** version, no product
+   * resources / guide links are needed in the reply — just the base
+   * template." All three of these references are editorial prose and
+   * nothing else, so there is genuinely nothing to compose.
+   */
+  it.each(["ai-mult", "oxi-pipe-mk2", "x0x-heart"])(
+    "%s has no resources section, so no provider call is made at all",
+    async (slug) => {
+      const db = createMockD1();
+      const { ai, calls } = createFakeAi({ text: "the model should never have been asked" });
+      const deps: ComposeReplyDeps = { env: createEnv({ DB: db, AI: ai }), fetch: createFakeFetch().fetch };
 
-    withCustomerFacingProse(source);
+      const result = await composeReply(deps, baseInput(slug));
 
-    expect(JSON.stringify(source)).toBe(before);
+      expect(calls).toHaveLength(0);
+      expect(result.fallback).toBeNull();
+      // No call, so nothing to account for — a `usage_log` row here
+      // would spend budget on a call that never happened.
+      expect(usageRows(db)).toEqual([]);
+      expect(result.model).toBeUndefined();
+    },
+  );
+
+  /**
+   * The failure mode the derivation exists to prevent, checked against
+   * the whole frozen corpus rather than argued for.
+   *
+   * `withheldProse` is read off the deterministic rendering — "prose the
+   * renderer did not emit" — precisely so it can never name text the
+   * renderer DOES emit. A hand-copied `Notes` predicate here could drift
+   * from src/reply/render.ts's, and the symptom would be silent: every
+   * faithful completion for the affected product falling back forever,
+   * with a `schema_invalid` row and a message that still reads fine.
+   */
+  it.each([...refs.keys()])("%s: a faithful completion passes every guard", async (slug) => {
+    const source = ref(slug);
+    const variants: ("built" | "kit")[] = source.category === "general-diy" ? ["built", "kit"] : ["built"];
+
+    for (const purchased of variants) {
+      const diy = source.category === "general-diy" && purchased === "kit";
+      const arrivalSchedule = source.category === "small" ? null : ARRIVAL;
+      const { ai } = createFakeAi({ text: faithfulSection(slug, { diy }) });
+      const deps: ComposeReplyDeps = { env: createEnv({ AI: ai }), fetch: createFakeFetch().fetch };
+
+      const result = await composeReply(deps, baseInput(slug, { arrivalSchedule, purchased }));
+
+      expect(result.fallback, `${slug} (${purchased})`).toBeNull();
+      expect(result.text).toBe(
+        renderDeterministicReply({
+          ref: source,
+          flags: { direct: false, discord: false },
+          arrivalSchedule,
+          purchased,
+        }),
+      );
+    }
   });
 });
 
