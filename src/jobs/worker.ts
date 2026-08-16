@@ -38,6 +38,7 @@
  */
 import type { Env } from "../env";
 import { claimJobs, updateJobState, type RepoDeps } from "../db/repos";
+import { errorSnippet, log } from "../ops/log";
 import type { JobRow, JobState } from "../db/schema";
 import { resolveProductRef, type ResolveResult } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
@@ -81,25 +82,6 @@ export interface RunDeliveryPassResult {
  */
 type RunJobDeps = { fetch: FetchLike; now: NowFn; sleep?: SleepFn };
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Module-private structured log — src/ops/log.ts is issue #11's stub to
- * fill (see its own header comment: "left to whichever sub-task first
- * needs it"), and #11 landed on base/reply-bot with a real
- * implementation (redaction, `logLlmCall`/`logLlmError`) after this
- * worktree branched from it, so it isn't in this branch's tree yet. This
- * local helper matches `log(level, message, fields)` exactly so the
- * eventual merge is a one-line import swap to `../ops/log`, not a
- * rewrite of every call site below.
- */
-type LocalLogLevel = "info" | "warn" | "error";
-type LocalLogFields = Record<string, string | number | boolean | null | undefined>;
-function log(level: LocalLogLevel, message: string, fields?: LocalLogFields): void {
-  console.error(JSON.stringify({ level, message, ...fields }));
-}
 
 /**
  * Strips a leading `<@BOT_ID>` mention, matching src/slack/events.ts
@@ -246,7 +228,7 @@ async function recordFailure(
   claimToken: string,
   error: unknown,
 ): Promise<void> {
-  const message = errorMessage(error);
+  const message = errorSnippet(error);
   const nextAttempts = job.attempts + 1;
   const landing = nextStateAfterFailure(nextAttempts, DEFAULT_RETRY_POLICY);
   const claimExpiresAt =
@@ -354,13 +336,13 @@ export async function runScheduledSweep(deps: RunDeliveryPassDeps): Promise<void
     const result = await runDeliveryPass(deps);
     log("info", "jobs: delivery pass complete", { ...result });
   } catch (error) {
-    log("error", "jobs: delivery pass failed during scheduled sweep", { error: errorMessage(error) });
+    log("error", "jobs: delivery pass failed during scheduled sweep", { error: errorSnippet(error) });
   }
 
   try {
     const result = await runRetentionSweep({ db: deps.env.DB, now: deps.now });
     log("info", "jobs: retention sweep complete", { ...result });
   } catch (error) {
-    log("error", "jobs: retention sweep failed during scheduled sweep", { error: errorMessage(error) });
+    log("error", "jobs: retention sweep failed during scheduled sweep", { error: errorSnippet(error) });
   }
 }
