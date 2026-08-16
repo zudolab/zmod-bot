@@ -40,5 +40,8 @@ export interface Env {
  * parsing rule.
  */
 export function parseCommaSeparated(value: string): string[] {
-  throw new Error("not implemented: parseCommaSeparated");
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
