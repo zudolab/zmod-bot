@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local `wrangler dev` (gitignored — never commit real
+# values). Names must match wrangler.jsonc `secrets.required`.
+
+SLACK_BOT_TOKEN=xoxb-replace-me
+SLACK_SIGNING_SECRET=replace-me
+ANTHROPIC_API_KEY=sk-ant-replace-me

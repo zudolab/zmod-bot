@@ -1,0 +1,10 @@
+# pnpm 11 supply-chain settings (see pnpm docs — these no longer live in
+# .npmrc). allowBuilds opts the two build-script deps wrangler/vitest
+# actually need in to run their postinstall — both are well-known,
+# widely-depended-on packages:
+#   - esbuild: wrangler's and vitest's bundler
+#   - workerd: the Cloudflare Workers runtime `wrangler dev`/`deploy
+#     --dry-run` shell out to
+allowBuilds:
+  esbuild: true
+  workerd: true
