@@ -66,6 +66,28 @@ Build plan and the full sub-issue breakdown: issue #1.
 - Commit messages start with a scope prefix: `[worker]`, `[slack]`, `[refs]`, `[llm]`, `[db]`,
   `[data]`, `[docs]`, `[misc]`.
 
+## Working in a worktree (agents: read this before your first Bash call)
+
+Parallel implementation runs in `worktrees/<topic>/`, each on its own `reply-bot/<topic>` branch,
+with the primary checkout at the repo root sitting on `base/reply-bot`.
+
+**The Bash working directory does not reliably persist between calls.** A `cd` in one call can be
+reset by the next, so a `cd`-less command silently runs against the **primary checkout** — i.e.
+against the shared base branch. This has already happened once in this repo. It was harmless that
+time; a `git add -A && git commit` run the same way would have committed straight onto
+`base/reply-bot`, bypassing the topic branch and the merge gate, and could have swept up a parallel
+sibling's in-progress files.
+
+- **Prefix every Bash call with an explicit `cd`** to your worktree. Never rely on a previous one.
+- For git, prefer the unambiguous `git -C /abs/path/to/worktrees/<topic> ...`.
+- **Before any `git add` / `git commit`**, confirm position:
+  `cd <worktree> && pwd && git branch --show-current` — it must print your worktree and
+  `reply-bot/<topic>`, never `base/reply-bot`.
+- Read other repos (e.g. reference implementations) by absolute path, and `cd` back before writing.
+
+**Do not keep editing after you send your completion report.** A late edit races the manager's merge
+and is either lost or double-committed — this has also already happened here.
+
 ## Repo layout
 
 ```
