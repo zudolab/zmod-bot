@@ -22,6 +22,7 @@ import {
   type ProductRefVersionRow,
   type ProductRefVersionSource,
   type RefDraftRow,
+  type RefDraftSource,
   type UsageTask,
 } from "./schema";
 
@@ -179,7 +180,18 @@ export async function getProductRefVersion(
   return row ?? null;
 }
 
-/** Restores `slug` to a prior `version`, recorded as a new version entry (never rewrites history in place). Aliases are untouched. */
+/**
+ * Restores `slug` to a prior `version`, recorded as a new version entry
+ * (never rewrites history in place). Aliases are untouched.
+ *
+ * ⚠️ **Not the path a Slack `ref restore` takes.** This is the raw
+ * primitive: last-writer-wins, and it leaves `product_ref_aliases`
+ * pointing at whatever the *current* body declares rather than the
+ * restored one. The operator-facing restore goes through a `ref_drafts`
+ * preview and src/refs/commands.ts approveRefDraft instead, which fences
+ * on the expected version, re-parses the body, and replaces the alias
+ * set from it (issue #15). Prefer that for anything a human triggers.
+ */
 export async function restoreProductRefVersion(
   deps: RepoDeps,
   slug: string,
@@ -214,17 +226,26 @@ export interface CreateRefDraftInput {
   createdByUserId: string;
   /** Epoch milliseconds this draft stops being consumable. */
   expiresAt: number;
+  /**
+   * Which authoring action produced this draft. Defaults to the only
+   * thing `base_version` can tell you on its own — `authored` for a
+   * brand-new ref, `refreshed` for an edit — so an authoring caller
+   * (issue #17) may omit it. A `ref restore` MUST pass `"restored"`
+   * explicitly; nothing else can distinguish it from a refresh.
+   */
+  source?: RefDraftSource;
 }
 
 export async function createRefDraft(deps: RepoDeps, input: CreateRefDraftInput): Promise<RefDraftRow> {
   const id = crypto.randomUUID();
   const nowMs = deps.now().getTime();
+  const source: RefDraftSource = input.source ?? (input.baseVersion === null ? "authored" : "refreshed");
 
   await deps.db
     .prepare(
       `INSERT INTO ${TABLE_NAMES.refDrafts}
-         (id, slug, body_md, category, product_url, base_version, created_at, created_by, expires_at, consumed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         (id, slug, body_md, category, product_url, base_version, created_at, created_by, expires_at, consumed_at, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
     )
     .bind(
       id,
@@ -236,6 +257,7 @@ export async function createRefDraft(deps: RepoDeps, input: CreateRefDraftInput)
       nowMs,
       input.createdByUserId,
       input.expiresAt,
+      source,
     )
     .run();
 
@@ -250,7 +272,24 @@ export async function createRefDraft(deps: RepoDeps, input: CreateRefDraftInput)
     created_by: input.createdByUserId,
     expires_at: input.expiresAt,
     consumed_at: null,
+    source,
   };
+}
+
+/**
+ * Reads a draft without consuming it — the approve path's first step
+ * (src/slack/interactions.ts handleRefDraftDecision), which must be able
+ * to refuse a stale/unparseable draft *without* stamping `consumed_at`.
+ * consumeRefDraft is the consuming counterpart, used by the reject path;
+ * the approve path consumes inside commitRefDraft's batch instead, so
+ * the stamp and the write land or fail together.
+ */
+export async function getRefDraft(deps: RepoDeps, id: string): Promise<RefDraftRow | null> {
+  const row = await deps.db
+    .prepare(`SELECT * FROM ${TABLE_NAMES.refDrafts} WHERE id = ?`)
+    .bind(id)
+    .first<RefDraftRow>();
+  return row ?? null;
 }
 
 /**
@@ -279,6 +318,168 @@ export async function consumeRefDraft(deps: RepoDeps, id: string): Promise<RefDr
   if (result.meta.changes === 0) return null;
 
   return { ...draft, consumed_at: nowMs };
+}
+
+/**
+ * Which slug currently owns each of `aliasNorms`, for the aliases that
+ * are claimed at all. `product_ref_aliases.alias_norm` is a PRIMARY KEY,
+ * so an alias already owned by a *different* product would abort
+ * commitRefDraft's batch on a constraint violation — this is the
+ * pre-flight that turns that into a readable refusal instead.
+ */
+export async function findAliasOwners(
+  deps: RepoDeps,
+  aliasNorms: readonly string[],
+): Promise<{ aliasNorm: string; slug: string }[]> {
+  if (aliasNorms.length === 0) return [];
+  const placeholders = aliasNorms.map(() => "?").join(", ");
+  const result = await deps.db
+    .prepare(
+      `SELECT alias_norm, slug FROM ${TABLE_NAMES.productRefAliases} WHERE alias_norm IN (${placeholders})`,
+    )
+    .bind(...aliasNorms)
+    .all<{ alias_norm: string; slug: string }>();
+  return result.results.map((row) => ({ aliasNorm: row.alias_norm, slug: row.slug }));
+}
+
+export interface CommitRefDraftInput {
+  draftId: string;
+  slug: string;
+  /** NULL when the draft creates a brand-new reference; else the version it was authored against. */
+  expectedVersion: number | null;
+  category: ProductCategory;
+  productUrl: string | null;
+  bodyMd: string;
+  /** The FULL replacement alias set — already normalized and deduped. Every existing alias row for `slug` is deleted first, so an alias dropped from the body stops resolving. */
+  aliases: readonly string[];
+  actorUserId: string;
+  source: ProductRefVersionSource;
+}
+
+export interface CommitRefDraftResult {
+  /** False = a lost race (the draft was consumed, expired, or the reference moved off `expectedVersion` between the caller's checks and this batch). Nothing was written. Not an error — CLAUDE.md "Conventions". */
+  committed: boolean;
+  /** The version this commit would produce / did produce. */
+  version: number;
+}
+
+/**
+ * Commits an approved draft: bumps `product_refs`, appends the matching
+ * `product_ref_versions` row, replaces the slug's `product_ref_aliases`
+ * rows, and stamps the draft's `consumed_at` — all in ONE `db.batch()`,
+ * so a mid-batch failure rolls the whole thing back (issue #15: no
+ * partial version row, no orphaned alias rows).
+ *
+ * **Why every statement carries its own WHERE fence.** `db.batch()` is a
+ * transaction, but it is not a script: there is no way to abort the
+ * remaining statements when an earlier one matches zero rows. A batch
+ * whose first statement is a conditional `UPDATE ... WHERE version = ?`
+ * and whose rest are unconditional would, on a lost race, still insert
+ * the version row and rewrite the aliases — the exact silent corruption
+ * this function exists to prevent. So:
+ *
+ * - Statement 1 carries the whole precondition: the expected-version
+ *   fence *and* the draft-is-live fence, evaluated atomically.
+ * - Every later statement is gated on `EXISTS (... product_refs WHERE
+ *   slug = ? AND version = ? AND updated_at = ? AND updated_by = ?)` —
+ *   the row statement 1 just wrote, identified by a triple no other
+ *   writer can reproduce without also colliding on
+ *   `product_ref_versions`'s `UNIQUE (slug, version)`, which would abort
+ *   the batch rather than let a partial write through.
+ *
+ * `results[0].meta.changes` is therefore the authoritative outcome: zero
+ * means the whole batch was a no-op.
+ */
+export async function commitRefDraft(deps: RepoDeps, input: CommitRefDraftInput): Promise<CommitRefDraftResult> {
+  const { db } = deps;
+  const nowMs = deps.now().getTime();
+  const nextVersion = (input.expectedVersion ?? 0) + 1;
+
+  const refs = TABLE_NAMES.productRefs;
+  const versions = TABLE_NAMES.productRefVersions;
+  const aliases = TABLE_NAMES.productRefAliases;
+  const drafts = TABLE_NAMES.refDrafts;
+
+  /** The draft is unconsumed and unexpired. Bound as (draftId, nowMs). */
+  const draftLive = `EXISTS (SELECT 1 FROM ${drafts} WHERE id = ? AND consumed_at IS NULL AND expires_at > ?)`;
+  /** Statement 1 landed, in this transaction. Bound as (slug, nextVersion, nowMs, actorUserId). */
+  const wrote = `EXISTS (SELECT 1 FROM ${refs} WHERE slug = ? AND version = ? AND updated_at = ? AND updated_by = ?)`;
+  const wroteBindings = [input.slug, nextVersion, nowMs, input.actorUserId] as const;
+
+  const head =
+    input.expectedVersion === null
+      ? db
+          .prepare(
+            `INSERT INTO ${refs} (slug, category, product_url, body_md, version, updated_at, updated_by)
+             SELECT ?, ?, ?, ?, ?, ?, ?
+             WHERE NOT EXISTS (SELECT 1 FROM ${refs} WHERE slug = ?) AND ${draftLive}`,
+          )
+          .bind(
+            input.slug,
+            input.category,
+            input.productUrl,
+            input.bodyMd,
+            nextVersion,
+            nowMs,
+            input.actorUserId,
+            input.slug,
+            input.draftId,
+            nowMs,
+          )
+      : db
+          .prepare(
+            `UPDATE ${refs}
+                SET category = ?, product_url = ?, body_md = ?, version = ?, updated_at = ?, updated_by = ?
+              WHERE slug = ? AND version = ? AND ${draftLive}`,
+          )
+          .bind(
+            input.category,
+            input.productUrl,
+            input.bodyMd,
+            nextVersion,
+            nowMs,
+            input.actorUserId,
+            input.slug,
+            input.expectedVersion,
+            input.draftId,
+            nowMs,
+          );
+
+  const statements = [
+    head,
+    db
+      .prepare(
+        `INSERT INTO ${versions} (slug, version, body_md, category, product_url, created_at, created_by, source)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${wrote}`,
+      )
+      .bind(
+        input.slug,
+        nextVersion,
+        input.bodyMd,
+        input.category,
+        input.productUrl,
+        nowMs,
+        input.actorUserId,
+        input.source,
+        ...wroteBindings,
+      ),
+    db.prepare(`DELETE FROM ${aliases} WHERE slug = ? AND ${wrote}`).bind(input.slug, ...wroteBindings),
+    ...input.aliases.map((aliasNorm) =>
+      db
+        .prepare(`INSERT INTO ${aliases} (alias_norm, slug) SELECT ?, ? WHERE ${wrote}`)
+        .bind(aliasNorm, input.slug, ...wroteBindings),
+    ),
+    db
+      .prepare(
+        `UPDATE ${drafts} SET consumed_at = ?
+          WHERE id = ? AND consumed_at IS NULL AND expires_at > ? AND ${wrote}`,
+      )
+      .bind(nowMs, input.draftId, nowMs, ...wroteBindings),
+  ];
+
+  const results = await db.batch(statements);
+  const committed = (results[0]?.meta.changes ?? 0) > 0;
+  return { committed, version: nextVersion };
 }
 
 // ---------------------------------------------------------------------

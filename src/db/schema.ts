@@ -67,7 +67,19 @@ export interface RefDraftRow {
   created_by: string;
   expires_at: number;
   consumed_at: number | null;
+  /** Which authoring action produced this draft — copied verbatim onto the product_ref_versions row on approval. See RefDraftSource. */
+  source: RefDraftSource;
 }
+
+/**
+ * A draft's authoring action (migrations/0003_ref_drafts_source.sql).
+ * Narrower than ProductRefVersionSource: `seed` can never originate from
+ * a draft. Carried as a column rather than inferred from `base_version`
+ * at approval time, because `authored` vs `refreshed` is inferable that
+ * way but `restored` is not — and mislabelling a restore as a refresh
+ * falsifies the only undo history this store has (issue #15).
+ */
+export type RefDraftSource = Exclude<ProductRefVersionSource, "seed">;
 
 /** Written in the same db.batch() as the jobs row, ON CONFLICT DO NOTHING — the de-dup half of the durable-intent write. */
 export interface SlackEventReceiptRow {
