@@ -17,7 +17,15 @@ const sources = Object.entries(
   .map(([path, code]): [string, string] => [path.replace("../src/", ""), code])
   .sort(([a], [b]) => a.localeCompare(b));
 
-/** Removes line and block comments, leaving string and template literals intact. */
+/** Every quoted module specifier: `from "x"`, `import "x"`, `import("x")`, `require("x")`. */
+const MODULE_SPECIFIER = /\b(?:from|import|require)\s*\(?\s*(["'`])((?:[^\\]|\\.)*?)\1/g;
+
+/**
+ * Removes line and block comments, leaving string and template literals
+ * intact. Regex literals are not tracked, so one containing `//` (e.g.
+ * `/https?:\/\//`) eats the rest of its line — which is why the import
+ * check below runs on the raw source rather than on this output.
+ */
 function stripComments(source: string): string {
   let out = "";
   let index = 0;
@@ -70,8 +78,21 @@ describe("seed corpus isolation", () => {
     expect(stripComments(code)).not.toContain("data/seed");
   });
 
-  it("would catch a real import", () => {
-    expect(stripComments('import x from "../../data/seed/products/oxi-one.md";')).toContain("data/seed");
-    expect(stripComments("// see data/seed/README.md\n/* data/seed */\nconst a = 1;")).not.toContain("data/seed");
+  it.each(sources)("src/%s does not import from data/seed", (_path, code) => {
+    const specifiers = [...code.matchAll(MODULE_SPECIFIER)].map((match) => match[2]!);
+
+    expect(specifiers.filter((one) => one.includes("data/seed"))).toEqual([]);
+  });
+
+  it("would catch a real import, and tolerates one named in a comment", () => {
+    const real = 'import corpus from "../../data/seed/products/oxi-one.md";';
+    const mention = "// nothing here may import from data/seed\n/* data/seed */\nconst a = 1;";
+
+    expect(stripComments(real)).toContain("data/seed");
+    expect([...real.matchAll(MODULE_SPECIFIER)].map((match) => match[2])).toEqual([
+      "../../data/seed/products/oxi-one.md",
+    ]);
+    expect(stripComments(mention)).not.toContain("data/seed");
+    expect([...mention.matchAll(MODULE_SPECIFIER)]).toEqual([]);
   });
 });

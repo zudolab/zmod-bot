@@ -85,6 +85,15 @@ describe("the seed corpus", () => {
     expect(parsed).toBe(91);
   });
 
+  it("gates 13 sections, every one of them on a general-diy product", () => {
+    const gated = [...refs.values()].flatMap((parsed) =>
+      parsed.sections.filter((section) => section.gate === "diy-only").map(() => parsed.category),
+    );
+
+    expect(gated).toHaveLength(13);
+    expect(new Set(gated)).toEqual(new Set(["general-diy"]));
+  });
+
   it("keeps aliases verbatim, without normalizing slugs, display names or Japanese", () => {
     expect(ref("zudo-rail").aliases).toEqual(["zudo rail", "ズドレール"]);
     expect(ref("oxi-one").aliases).toEqual([
