@@ -3,9 +3,12 @@
  * types (ProductRef, JobRow, ParsedCommand, ...) live in the module that
  * owns that domain instead — this file is only for the DI plumbing every
  * layer needs, per CLAUDE.md: "every function that performs I/O takes its
- * dependencies as injected options". This is what lets the whole system
- * be tested without a Workers runtime — there is no Miniflare and no
- * Playwright in this repo.
+ * dependencies as injected options". This is what lets handler/orchestration
+ * logic be tested with plain fakes, no runtime of any kind. The one
+ * exception is the D1 layer itself, where storage semantics (not just
+ * this module's own logic) are under test — see src/db/test-support.ts
+ * and tests/helpers/test-env.ts for that narrower, deliberate use of
+ * Miniflare. There is no Playwright in this repo.
  */
 
 /** Injectable fetch, so every outbound HTTP call is replaceable in tests. */

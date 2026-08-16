@@ -43,7 +43,7 @@ Build plan and the full sub-issue breakdown: issue #1.
   platform's storage engine* (`/test-wisdom` → `project-recipes/backend-testing.mdx`):
   - **`createMockD1()`** (`src/db/test-support.ts`) — a `Map`-backed stub implementing only the
     `D1Database` methods a test needs. For handler branching and threading. Fast, plain Node.
-  - **`createTestEnv()`** (`src/db/test-support.ts`) — a **Miniflare**-backed real D1 binding with
+  - **`createTestEnv()`** (`tests/helpers/test-env.ts`) — a **Miniflare**-backed real D1 binding with
     `migrations/` applied. For **storage semantics**: `ON CONFLICT DO NOTHING` reporting
     `meta.changes === 0`, `db.batch()` atomicity, the claim-token fenced `UPDATE` matching zero rows.
 
