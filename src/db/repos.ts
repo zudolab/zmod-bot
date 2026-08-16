@@ -372,6 +372,12 @@ export interface ClaimJobsInput {
  * `claim_expires_at` in a single UPDATE ... RETURNING so a concurrent
  * delivery pass cannot also pick them up. Does not itself move `state`
  * — see updateJobState, fenced by the same claimToken.
+ *
+ * Eligibility also matches a row already stamped with `claimToken`
+ * (issue #10) — so a caller that retries a claim call with the *same*
+ * token (e.g. after losing the response to a network flake, without
+ * knowing whether the UPDATE itself landed) re-selects the batch it
+ * already owns instead of drifting onto a second, overlapping one.
  */
 export async function claimJobs(deps: RepoDeps, input: ClaimJobsInput): Promise<JobRow[]> {
   const { db, now } = deps;
@@ -387,13 +393,14 @@ export async function claimJobs(deps: RepoDeps, input: ClaimJobsInput): Promise<
        SET claim_token = ?, claim_expires_at = ?, updated_at = ?
        WHERE id IN (
          SELECT id FROM ${TABLE_NAMES.jobs}
-         WHERE state IN (${statePlaceholders}) AND (claim_expires_at IS NULL OR claim_expires_at < ?)
+         WHERE state IN (${statePlaceholders})
+           AND (claim_expires_at IS NULL OR claim_expires_at < ? OR claim_token = ?)
          ORDER BY id
          LIMIT ?
        )
        RETURNING *`,
     )
-    .bind(input.claimToken, claimExpiresAt, nowMs, ...input.states, nowMs, input.limit)
+    .bind(input.claimToken, claimExpiresAt, nowMs, ...input.states, nowMs, input.claimToken, input.limit)
     .all<JobRow>();
 
   return result.results;
@@ -404,6 +411,18 @@ export interface UpdateJobStateInput {
   claimToken: string;
   state: JobState;
   lastError?: string | null;
+  /**
+   * Pushes the lease forward (issue #10's retry backoff: `state =
+   * 'failed'` plus a longer `claim_expires_at` is what makes the row
+   * reclaimable only after the backoff window, via the same
+   * expiry-based mechanism claimJobs already uses — no separate
+   * "release" path). Omitted/undefined leaves the column untouched via
+   * `COALESCE`, which is what every same-pass hop (e.g. composing ->
+   * delivering) wants: keep whatever lease claimJobs already stamped.
+   */
+  claimExpiresAt?: number;
+  /** True on a failure write — the only point `attempts` is incremented (issue #10's retry ceiling; see src/jobs/queue.ts nextStateAfterFailure). */
+  incrementAttempts?: boolean;
 }
 
 /**
@@ -417,22 +436,37 @@ export async function updateJobState(deps: RepoDeps, input: UpdateJobStateInput)
   const { db, now } = deps;
   const nowMs = now().getTime();
   const isTerminal = input.state === "done" || input.state === "dead";
+  const attemptsDelta = input.incrementAttempts ? 1 : 0;
+  const claimExpiresAt = input.claimExpiresAt ?? null;
 
   const statement = isTerminal
     ? db
         .prepare(
           `UPDATE ${TABLE_NAMES.jobs}
-           SET state = ?, updated_at = ?, last_error = ?, completed_at = ?
+           SET state = ?, updated_at = ?, last_error = ?, completed_at = ?,
+               claim_expires_at = COALESCE(?, claim_expires_at),
+               attempts = attempts + ?
            WHERE id = ? AND claim_token = ?`,
         )
-        .bind(input.state, nowMs, input.lastError ?? null, nowMs, input.id, input.claimToken)
+        .bind(
+          input.state,
+          nowMs,
+          input.lastError ?? null,
+          nowMs,
+          claimExpiresAt,
+          attemptsDelta,
+          input.id,
+          input.claimToken,
+        )
     : db
         .prepare(
           `UPDATE ${TABLE_NAMES.jobs}
-           SET state = ?, updated_at = ?, last_error = ?
+           SET state = ?, updated_at = ?, last_error = ?,
+               claim_expires_at = COALESCE(?, claim_expires_at),
+               attempts = attempts + ?
            WHERE id = ? AND claim_token = ?`,
         )
-        .bind(input.state, nowMs, input.lastError ?? null, input.id, input.claimToken);
+        .bind(input.state, nowMs, input.lastError ?? null, claimExpiresAt, attemptsDelta, input.id, input.claimToken);
 
   const result = await statement.run();
   return result.meta.changes > 0;

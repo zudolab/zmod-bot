@@ -17,7 +17,7 @@ import type { Env } from "./env";
 import { Router } from "./router";
 import { handleSlackEvents } from "./slack/events";
 import { handleSlackInteractions } from "./slack/interactions";
-import { runDeliveryPass } from "./jobs/worker";
+import { runScheduledSweep } from "./jobs/worker";
 
 const router = new Router()
   .post("/slack/events", handleSlackEvents)
@@ -29,7 +29,13 @@ export default {
     return router.handle(request, env, ctx);
   },
 
+  // The cron trigger — every 5 minutes (wrangler.jsonc triggers.crons).
+  // This is the contract, not the optimization: runScheduledSweep's
+  // delivery pass alone (with no immediate-delivery waitUntil ever
+  // firing from src/slack/events.ts) is sufficient to eventually
+  // deliver every job, because it claims both "pending" and "failed"
+  // jobs unconditionally — see src/jobs/worker.ts's module comment.
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(runDeliveryPass({ env, fetch, now: () => new Date() }));
+    ctx.waitUntil(runScheduledSweep({ env, fetch, now: () => new Date() }));
   },
 } satisfies ExportedHandler<Env>;
