@@ -17,9 +17,24 @@
  * trigger body, switch to a real SQL statement splitter rather than
  * debugging a truncated migration.
  *
- * Implementation (constructing the Miniflare instance, applying
- * migrations/, wiring its D1 binding) is issue #3's responsibility.
+ * The same collapse-to-one-line step is also why migrations/*.sql must
+ * never use a `--` line comment: once newlines are folded to spaces, a
+ * `--` comment consumes everything after it to the end of the (now much
+ * longer) line, silently truncating the rest of the statement. Use a
+ * block comment instead — see migrations/0001_init.sql.
+ *
+ * Migration files are imported with Vite's `?raw` suffix (vitest's
+ * transform is Vite-powered — see raw-sql.d.ts) rather than read via
+ * Node's `fs`: this project's tsconfig types only
+ * `@cloudflare/workers-types` (no `node`), so `fs` isn't typed here, and
+ * this keeps that Workers-only boundary intact instead of adding a Node
+ * types dependency just for this test helper.
  */
+import { Miniflare } from "miniflare";
+import migration0001 from "../../migrations/0001_init.sql?raw";
+
+/** Every migration file's SQL text, applied in order. Add to this array as new migrations land (e.g. a future seed migration). */
+const MIGRATIONS: string[] = [migration0001];
 
 export interface TestEnvHandle {
   db: D1Database;
@@ -27,7 +42,26 @@ export interface TestEnvHandle {
   dispose(): Promise<void>;
 }
 
-/** `new Miniflare({ modules: true, script: "", d1Databases: ["DB"] })` with migrations/ applied — see the gotcha above. */
-export function createTestEnv(): Promise<TestEnvHandle> {
-  throw new Error("not implemented: createTestEnv");
+/**
+ * `new Miniflare({ modules: true, script: "", d1Databases: ["DB"] })`
+ * with migrations/*.sql applied — see the gotcha above.
+ */
+export async function createTestEnv(): Promise<TestEnvHandle> {
+  const mf = new Miniflare({ modules: true, script: "", d1Databases: ["DB"] });
+  const bindings = await mf.getBindings();
+  const db = bindings.DB as D1Database;
+
+  for (const sql of MIGRATIONS) {
+    for (const statement of sql
+      .split(";")
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter(Boolean)) {
+      await db.exec(statement);
+    }
+  }
+
+  return {
+    db,
+    dispose: () => mf.dispose(),
+  };
 }
