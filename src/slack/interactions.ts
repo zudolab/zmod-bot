@@ -72,7 +72,7 @@ export interface SlackInteractionsDeps {
   waitUntil: WaitUntilFn;
   /** Injected so Slack retry/backoff (src/slack/api.ts) runs instantly in tests; defaults to a real timer. */
   sleep?: SleepFn;
-  /** Injected compose step — defaults to the real src/reply/compose.ts composeReply (issue #13), which throws `not implemented` until that branch merges. See src/jobs/worker.ts's identical injection for why. */
+  /** Injected compose step — defaults to the real src/reply/compose.ts composeReply (issue #13). Tests supply a deterministic fake instead of exercising the real LLM/Workers AI call, matching src/jobs/worker.ts's identical injection. */
   composeReply?: ComposeReplyFn;
 }
 
@@ -433,32 +433,29 @@ async function finishReplyAfterInteraction(
   }
 
   let refRow: ProductRefRow | null = null;
+  let purchased: "built" | "kit" = "built";
   if (ctx.candidateSlugOverride) {
     refRow = await getProductRefBySlug(repoDeps, ctx.candidateSlugOverride);
+    // The chosen candidate could itself be a general-diy product with an
+    // as-yet-undetermined variant, but there is no second round of
+    // disambiguation here — defaults to "built", same as
+    // src/jobs/worker.ts composeMatchPayload's `resolved.variant ?? "built"`.
   } else {
     const resolved = await resolveProductRef(repoDeps, job.raw_text);
-    if (resolved.kind === "match" || resolved.kind === "variant-ambiguous") {
+    if (resolved.kind === "match") {
+      refRow = resolved.ref;
+      purchased = resolved.variant ?? "built";
+    } else if (resolved.kind === "variant-ambiguous") {
       refRow = resolved.ref;
     }
   }
+  if (ctx.variantOverride) purchased = ctx.variantOverride;
   if (!refRow) {
     log("warn", "interactions: could not re-resolve product for click", { jobId: ctx.jobId });
     return;
   }
 
   const ref = parseProductRefMarkdown({ slug: refRow.slug, markdown: refRow.body_md });
-
-  // NOTE: ctx.variantOverride (built vs kit, from a variant_pick click)
-  // has no channel into composeReply below, same gap as
-  // src/jobs/worker.ts composeMatchPayload — see that function's
-  // comment and this issue's final report.
-  if (ctx.variantOverride) {
-    log("info", "interactions: variant_pick resolved without a purchased-variant channel to composeReply", {
-      jobId: ctx.jobId,
-      slug: ref.slug,
-      variant: ctx.variantOverride,
-    });
-  }
 
   let arrivalSchedule = ctx.arrivalSchedule;
   if (arrivalSchedule === null && parsed.arrival !== null) {
@@ -482,8 +479,11 @@ async function finishReplyAfterInteraction(
 
   const compose = deps.composeReply ?? defaultComposeReply;
   const composed = await compose(
-    { env, fetch: deps.fetch },
-    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct },
+    // `now` forwarded so composeReply's UTC-day budget window agrees
+    // with the rest of this job's clock — src/reply/compose.ts
+    // ComposeReplyDeps.now.
+    { env, fetch: deps.fetch, now: deps.now },
+    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText: job.raw_text },
   );
   const finalPayload = buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
   await updateOriginalMessage(deps, slackApiDeps, ctx, finalPayload);

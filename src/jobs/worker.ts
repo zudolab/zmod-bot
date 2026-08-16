@@ -19,13 +19,19 @@
  *
  * **Composing seam.** `buildReplyJobPayload` below routes every `match`
  * through src/reply/compose.ts `composeReply` (issue #13's guarded LLM
- * path) rather than calling the deterministic renderer directly.
- * `composeReply` is injected (see `ComposeReplyFn` / `RunJobDeps.composeReply`)
- * the same way `fetch`/`now`/`sleep` already are — its real
- * implementation throws `not implemented: composeReply` until issue
- * #13's branch merges, so every test here supplies a fake. This is
- * deliberate, not a workaround: see CLAUDE.md "Dependency injection at
- * every I/O boundary".
+ * path) rather than calling the deterministic renderer directly, and
+ * always forwards the injected clock (`now`) plus `purchased`/
+ * `variantText` — see composeMatchPayload. `composeReply` is injected
+ * (see `ComposeReplyFn` / `RunJobDeps.composeReply`) the same way
+ * `fetch`/`now`/`sleep` already are — every test here supplies a
+ * deterministic fake rather than exercising the real LLM/Workers AI
+ * call, per CLAUDE.md "Dependency injection at every I/O boundary".
+ * composeReply itself never throws for a guard trip, a provider outage,
+ * or a refusal (it falls back and reports `usedFallback: true` instead)
+ * — a throw reaching this module is a genuine caller error (e.g. a
+ * `general` reply with `arrivalSchedule: null`) and is left to fail
+ * loudly through the normal recordFailure path below, never caught or
+ * retried here.
  *
  * **Interactive follow-ups (issue #14).** A `general`/`general-diy`
  * match with no arrival date in the mention text, a `variant-ambiguous`
@@ -126,12 +132,18 @@ function buildTextMessagePayload(text: string, summaryText: string): SlackMessag
  * src/slack/interactions.ts (finishing after a variant/candidate click),
  * so both paths honor an arrival preset typed in the original mention
  * text the same way.
+ *
+ * `purchased` (built vs kit) and `rawText` (forwarded as
+ * ComposeReplyInput.variantText, which gates `variant-match` literal
+ * blocks — e.g. zudo-rail's Lite renewal notice) both go straight
+ * through to composeReply; see src/reply/compose.ts ComposeReplyInput.
  */
 export async function composeMatchPayload(
   env: Env,
   jobId: number,
   ref: ProductRef,
   purchased: "built" | "kit",
+  rawText: string,
   parsed: Extract<ParsedCommand, { kind: "reply" }>,
   deps: RunJobDeps,
 ): Promise<SlackMessagePayload> {
@@ -148,25 +160,13 @@ export async function composeMatchPayload(
     }
   }
 
-  // NOTE: `purchased` (built vs kit) is not threaded into composeReply
-  // below — src/reply/compose.ts's ComposeReplyInput (issue #13, frozen)
-  // has no field for it, only `ref`/`arrivalSchedule`/`discord`/`direct`.
-  // There is no bare "diy" RefCategory to substitute it into `ref.category`
-  // either (src/refs/model.ts is explicit that none may be invented), so a
-  // `general-diy` product's kit half currently has no way to reach the
-  // "diy" template through this path. Logged here so it's visible rather
-  // than silently dropped; see this issue's final report for the gap.
-  log("info", "jobs: composing match without a purchased-variant channel to composeReply", {
-    jobId,
-    slug: ref.slug,
-    category: ref.category,
-    purchased,
-  });
-
   const compose = deps.composeReply ?? defaultComposeReply;
   const composed = await compose(
-    { env, fetch: deps.fetch },
-    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct },
+    // `now` forwarded so composeReply's UTC-day budget window agrees
+    // with the rest of this job's clock (src/reply/compose.ts
+    // ComposeReplyDeps.now) — never left to default to a real clock here.
+    { env, fetch: deps.fetch, now: deps.now },
+    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText: rawText },
   );
   return buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
 }
@@ -227,7 +227,7 @@ async function buildReplyJobPayload(
 
   // resolved.kind === "match"
   const ref = parseProductRefMarkdown({ slug: resolved.slug, markdown: resolved.ref.body_md });
-  return composeMatchPayload(env, job.id, ref, resolved.variant ?? "built", parsed, deps);
+  return composeMatchPayload(env, job.id, ref, resolved.variant ?? "built", job.raw_text, parsed, deps);
 }
 
 /**

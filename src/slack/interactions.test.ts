@@ -332,11 +332,46 @@ describe("handleSlackInteractionsWithDeps -- against real D1", () => {
 
     expect(composeCalls).toHaveLength(1);
     expect(composeCalls[0]?.arrivalSchedule).toBe("明後日月曜（8/18）到着予定になります。");
+    expect(composeCalls[0]?.purchased).toBe("built");
+    expect(composeCalls[0]?.variantText).toBe("<@U0BOT1> test general widget");
 
     const responseUrlCalls = calls.filter((call) => call.url.startsWith("https://hooks.slack.com/"));
     expect(responseUrlCalls).toHaveLength(1);
     expect(responseUrlCalls[0]?.body?.replace_original).toBe(true);
     expect(JSON.stringify(responseUrlCalls[0]?.body?.blocks)).toContain("rich_text_preformatted");
+  });
+
+  it("variant_pick click forwards the clicked built/kit choice and the raw text to composeReply", async () => {
+    await setup();
+    await upsertProductRef(repoDeps, {
+      slug: "test-variant-widget-click",
+      category: "general (built) / diy (kit)",
+      productUrl: "https://takazudomodular.com/products/test-variant-widget-click/",
+      bodyMd: `# Test Variant Widget Click\n\n- category: general (built) / diy (kit)\n- aliases: test variant widget click\n\n## Notes\n\nfixture\n`,
+      aliases: ["test variant widget click"].map(normalizeAlias),
+      changedByUserId: "seed",
+      source: "seed",
+    });
+    const rawText = "<@U0BOT1> test variant widget click 明日"; // no diy/kit/built signal -- resolver returns variant-ambiguous
+    const jobId = await seedReplyJob("ev-variant-click", rawText);
+    const { fetch, calls } = createFakeFetch();
+    const { composeReply, calls: composeCalls } = createFakeComposeReply();
+
+    const value = encodeButtonValue({ v: 1, id: String(jobId), a: "kit" });
+    const body = formEncodedPayload(blockActionsPayload({ actionId: `${ACTION_IDS.variantPick}_1`, value, userId: "U_HUMAN" }));
+    const request = await makeSignedRequest(body);
+    const { waitUntil, scheduled } = makeWaitUntil();
+
+    const response = await handleSlackInteractionsWithDeps(request, fakeEnv, makeDeps({ db: env!.db, waitUntil, fetch, composeReply }));
+    expect(response.status).toBe(200);
+    await Promise.all(scheduled);
+
+    expect(composeCalls).toHaveLength(1);
+    expect(composeCalls[0]?.purchased).toBe("kit");
+    expect(composeCalls[0]?.variantText).toBe(rawText);
+    // The original mention already had 明日, so the click resolves
+    // straight to the final reply -- no chained arrival picker.
+    expect(composeCalls[0]?.arrivalSchedule).toContain("到着予定になります。");
   });
 
   it("arrival_other opens a modal via views.open using the click's trigger_id", async () => {

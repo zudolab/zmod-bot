@@ -273,9 +273,73 @@ describe("delivery worker (issue #10)", () => {
     expect(composeCalls[0]?.arrivalSchedule).toContain("到着予定になります。");
     expect(composeCalls[0]?.discord).toBe(false);
     expect(composeCalls[0]?.direct).toBe(false);
+    // A plain `general` match (not general-diy): purchased defaults to
+    // "built", and the raw mention text is forwarded as variantText
+    // regardless (src/reply/compose.ts gates variant-match literal
+    // blocks on it; harmless when the product has none).
+    expect(composeCalls[0]?.purchased).toBe("built");
+    expect(composeCalls[0]?.variantText).toBe("<@U0BOT1> test general widget 2 明後日");
     const blocksText = JSON.stringify(calls[0]?.body.blocks);
     expect(blocksText).toContain("rich_text_preformatted");
     expect(blocksText).not.toContain(ACTION_IDS.arrivalPick);
+  });
+
+  it("a general-diy match forwards the resolved kit/built variant and the raw text to composeReply", async () => {
+    await setup();
+    await upsertProductRef(deps, {
+      slug: "test-diy-widget",
+      category: "general (built) / diy (kit)",
+      productUrl: "https://takazudomodular.com/products/test-diy-widget/",
+      bodyMd: `# Test DIY Widget\n\n- category: general (built) / diy (kit)\n- aliases: test diy widget\n\n## Notes\n\nfixture\n`,
+      aliases: ["test diy widget"].map(normalizeAlias),
+      changedByUserId: "seed",
+      source: "seed",
+    });
+    const rawText = "<@U0BOT1> test diy widget kit 明日";
+    await seedReplyJob("ev-diy-kit", rawText);
+    const { fetch, calls } = createFakeFetch();
+    const { composeReply, calls: composeCalls } = createFakeComposeReply();
+
+    const result = await runDeliveryPass({ env: fakeEnv, fetch, now: () => new Date(clockMs), sleep: noWaitSleep(), composeReply });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(calls).toHaveLength(1);
+    expect(composeCalls).toHaveLength(1);
+    // src/refs/resolve.ts detectVariant reads "kit" out of the raw
+    // mention text -> ResolveResult.variant === "kit" -> forwarded here
+    // as `purchased`, and the exact raw text is forwarded as
+    // `variantText` so a variant-match literal block (e.g. zudo-rail's
+    // Lite notice) could gate on it too.
+    expect(composeCalls[0]?.purchased).toBe("kit");
+    expect(composeCalls[0]?.variantText).toBe(rawText);
+  });
+
+  it("a general-diy match with no built/kit signal asks (variant_pick) rather than defaulting to built", async () => {
+    await setup();
+    await upsertProductRef(deps, {
+      slug: "test-variant-widget",
+      category: "general (built) / diy (kit)",
+      productUrl: "https://takazudomodular.com/products/test-variant-widget/",
+      bodyMd: `# Test Variant Widget\n\n- category: general (built) / diy (kit)\n- aliases: test variant widget\n\n## Notes\n\nfixture\n`,
+      // Deliberately no "diy"/"kit"/"built" substring in the alias or the
+      // mention text below -- src/refs/resolve.ts detectVariant must
+      // return undefined here (variant-ambiguous), never guess "built".
+      aliases: ["test variant widget"].map(normalizeAlias),
+      changedByUserId: "seed",
+      source: "seed",
+    });
+    await seedReplyJob("ev-variant-ambiguous", "<@U0BOT1> test variant widget");
+    const { fetch, calls } = createFakeFetch();
+    const { composeReply, calls: composeCalls } = createFakeComposeReply();
+
+    const result = await runDeliveryPass({ env: fakeEnv, fetch, now: () => new Date(clockMs), sleep: noWaitSleep(), composeReply });
+
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(calls).toHaveLength(1);
+    expect(composeCalls).toHaveLength(0); // never guessed a variant and composed
+    const blocksText = JSON.stringify(calls[0]?.body.blocks);
+    expect(blocksText).toContain(ACTION_IDS.variantPick);
+    expect(blocksText).not.toContain("rich_text_preformatted");
   });
 
   it("polish/ref job kinds fail with a clear not-implemented-yet error (issues #16/#17)", async () => {
