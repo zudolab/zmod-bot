@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // Workers ambient globals (Request, Response, D1Database, Ai,
+    // ExportedHandler, URLPattern, ...) come from this package, not from
+    // `wrangler types` — see src/env.ts: this repo hand-declares `Env`
+    // instead of committing a generated worker-configuration.d.ts, so
+    // `pnpm typecheck` passes on a clean clone with no generation step.
+    // Deliberately no "DOM" lib alongside it: DOM and workers-types both
+    // declare Request/Response/fetch, and mixing them is a duplicate-
+    // identifier conflict, not a superset.
+    "types": ["@cloudflare/workers-types"],
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}
