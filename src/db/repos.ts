@@ -359,6 +359,46 @@ export async function recordIncomingEvent(deps: RepoDeps, input: RecordIncomingE
   };
 }
 
+/** Looks up a job by its numeric id — used by src/slack/interactions.ts to recover a reply job's context (raw_text, channel, thread) after a follow-up click (arrival/variant/candidate pick, issue #14). */
+export async function getJobById(deps: RepoDeps, id: number): Promise<JobRow | null> {
+  const row = await deps.db.prepare(`SELECT * FROM ${TABLE_NAMES.jobs} WHERE id = ?`).bind(id).first<JobRow>();
+  return row ?? null;
+}
+
+export interface RecordInteractionReceiptInput {
+  /**
+   * Synthetic id, not a real Slack `event_id` — Slack interactions
+   * (button clicks, modal submissions) have no event_id of their own,
+   * so src/slack/interactions.ts mints one from
+   * `(action_id, opaque target id, action_ts)` per issue #14's
+   * idempotency requirement.
+   */
+  id: string;
+  eventType: string;
+}
+
+/**
+ * Records a Slack interaction receipt for idempotency, reusing the same
+ * ON CONFLICT DO NOTHING `slack_event_receipts` table recordIncomingEvent
+ * writes to for events — see that function's doc comment. Returns true
+ * the first time this id is seen (the caller should run its effect),
+ * false for a duplicate click or Slack retry (the caller must not repeat
+ * the effect — CLAUDE.md "Read result.meta.changes on every conditional
+ * write").
+ */
+export async function recordInteractionReceipt(deps: RepoDeps, input: RecordInteractionReceiptInput): Promise<boolean> {
+  const nowMs = deps.now().getTime();
+  const result = await deps.db
+    .prepare(
+      `INSERT INTO ${TABLE_NAMES.slackEventReceipts} (event_id, event_type, received_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(event_id) DO NOTHING`,
+    )
+    .bind(input.id, input.eventType, nowMs)
+    .run();
+  return result.meta.changes > 0;
+}
+
 export interface ClaimJobsInput {
   states: JobState[];
   limit: number;

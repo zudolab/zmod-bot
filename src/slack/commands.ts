@@ -1,25 +1,172 @@
 /**
- * Parses an app_mention's text into a command, and gates the admin-only
- * ones. Flags/subcommands per data/seed/source-skill.md's original
+ * Parses an app_mention's text into a command, gates the admin-only
+ * ones, and carries the two small protocols the interactive follow-up
+ * flow needs: JST arrival-date computation (issue #14's "render time,
+ * injected clock" requirement) and the compact button-value envelope
+ * (epic issue #1 decision 8 — a button `value` is an id, never content).
+ * Flags/subcommands per data/seed/source-skill.md's original
  * `/l-reply-purchase` workflow (`--discord`, `--direct`) plus the ref
- * management commands from epic issue #1. Implementation is issue #14's
- * responsibility.
+ * management commands from epic issue #1.
+ *
+ * This module owns no I/O — src/jobs/worker.ts (the initial post) and
+ * src/slack/interactions.ts (the click) both import from here so the
+ * arrival/variant/candidate picker blocks and their action_ids stay in
+ * exactly one place.
  */
 import type { Env } from "../env";
+import { parseCommaSeparated } from "../env";
+import {
+  buildArrivalDateBlocks,
+  buildMessagePayload,
+  escapeMrkdwn,
+  type SlackMessagePayload,
+} from "./blocks";
+
+/* -------------------------------------------------------------------------
+ * Command grammar.
+ * ---------------------------------------------------------------------- */
+
+export type ArrivalPresetKey = "tomorrow" | "day_after_tomorrow" | "day_after_day_after_tomorrow";
 
 export type ParsedCommand =
-  | { kind: "reply"; query: string; discord: boolean; direct: boolean }
+  | { kind: "reply"; query: string; discord: boolean; direct: boolean; arrival: ArrivalPresetKey | null }
   | { kind: "ref_show"; slug: string }
   | { kind: "ref_history"; slug: string }
   | { kind: "ref_new"; query: string }
   | { kind: "ref_refresh"; slug: string }
   | { kind: "ref_restore"; slug: string; version: number }
   | { kind: "polish"; text: string }
-  | { kind: "unknown"; raw: string };
+  | { kind: "help" }
+  /** Unparseable input or an unknown flag — `reason` is a ready-to-post Japanese explanation, never a stack trace (issue #14: "never a silent no-op and never a stack trace"). */
+  | { kind: "unknown"; raw: string; reason: string };
 
-/** Strips the leading `<@BOT_ID>` mention and parses flags/subcommands from the remaining text. */
+/** `@bot help` and every parse failure point here — always shown alongside `reason` for an unknown command. */
+export const USAGE_TEXT = [
+  "*使い方*",
+  "`@bot <製品名またはURL>` — 返信を作成します（到着予定日が未指定ならボタンで確認します）",
+  "`@bot <製品名> 明日|明後日|明々後日` — 到着予定日を指定して返信します",
+  "`@bot <製品名> --discord --direct` — Discord案内を追加 / 直接取引（評価依頼なし）にします（順不同、どちらか片方でも両方でも可）",
+  "`@bot polish` の次の行に整えたい文章を貼り付けます",
+  "`@bot ref show|history|restore|new|refresh <slugまたは製品名> [引数]` — 製品リファレンスの管理コマンド",
+  "`@bot help` — この使い方を表示します",
+].join("\n");
+
+const GENERIC_MENTION_PREFIX = /^<@[^>]*>\s*/;
+
+/** Escapes `botUserId` for use inside a RegExp — Slack user ids are `[A-Z0-9]+` in practice, but this is defensive rather than assuming that. */
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Strips the leading `<@BOT_ID>` mention. Matches specifically against
+ * `botUserId` first (the Events API only ever delivers app_mention text
+ * mentioning this bot, so that should always hit); falls back to
+ * stripping any leading mention token — the same generic pattern
+ * src/refs/resolve.ts and src/jobs/worker.ts already use — so a mismatch
+ * still degrades gracefully instead of leaving a raw `<@...>` token
+ * glued onto the query.
+ */
+function stripBotMention(rawText: string, botUserId: string): string {
+  const specific = new RegExp(`^<@${escapeForRegExp(botUserId)}(?:\\|[^>]*)?>\\s*`, "i");
+  return specific.test(rawText) ? rawText.replace(specific, "") : rawText.replace(GENERIC_MENTION_PREFIX, "");
+}
+
+const KNOWN_FLAGS = new Set(["--discord", "--direct"]);
+const ARRIVAL_PRESET_BY_TOKEN: Record<string, ArrivalPresetKey> = {
+  明日: "tomorrow",
+  明後日: "day_after_tomorrow",
+  明々後日: "day_after_day_after_tomorrow",
+};
+const REF_SUBCOMMANDS = new Set(["show", "history", "restore", "new", "refresh"]);
+
+function unknownCommand(raw: string, reason: string): ParsedCommand {
+  return { kind: "unknown", raw, reason };
+}
+
+/**
+ * Parses the text after stripping the leading `<@BOT_ID>` mention. Pure —
+ * same input always produces the same ParsedCommand — so the table-driven
+ * grammar tests can assert on it directly with no I/O or clock involved.
+ */
 export function parseCommand(rawText: string, botUserId: string): ParsedCommand {
-  throw new Error("not implemented: parseCommand");
+  const body = stripBotMention(rawText, botUserId).trim();
+  if (body === "") return unknownCommand(rawText, "コマンドが空です。製品名またはコマンドを入力してください。");
+
+  const newlineIndex = body.indexOf("\n");
+  const firstLine = (newlineIndex === -1 ? body : body.slice(0, newlineIndex)).trim();
+  const afterFirstLine = newlineIndex === -1 ? "" : body.slice(newlineIndex + 1);
+  const headTokens = firstLine.split(/\s+/).filter((token) => token.length > 0);
+  const head = headTokens[0]?.toLowerCase() ?? "";
+
+  if (head === "help") return { kind: "help" };
+
+  if (head === "polish") {
+    const text = afterFirstLine.trim();
+    if (text === "") return unknownCommand(rawText, "polish の後に改行して、整えたい文章を貼り付けてください。");
+    return { kind: "polish", text };
+  }
+
+  if (head === "ref") {
+    const sub = headTokens[1]?.toLowerCase();
+    if (sub === undefined || !REF_SUBCOMMANDS.has(sub)) {
+      return unknownCommand(rawText, "ref の後には show|history|restore|new|refresh のいずれかを指定してください。");
+    }
+    const args = headTokens.slice(2);
+
+    if (sub === "restore") {
+      if (args.length < 2) return unknownCommand(rawText, "ref restore <slugまたは製品名> <バージョン番号> の形式で指定してください。");
+      const versionToken = args[args.length - 1]!;
+      const version = Number(versionToken);
+      if (!Number.isInteger(version) || version < 1) {
+        return unknownCommand(rawText, `ref restore のバージョン指定が不正です: ${versionToken}`);
+      }
+      const slug = args.slice(0, -1).join(" ").trim();
+      if (slug === "") return unknownCommand(rawText, "ref restore には対象のslugまたは製品名が必要です。");
+      return { kind: "ref_restore", slug, version };
+    }
+
+    const value = args.join(" ").trim();
+    if (value === "") return unknownCommand(rawText, `ref ${sub} には対象のslugまたは製品名が必要です。`);
+    if (sub === "show") return { kind: "ref_show", slug: value };
+    if (sub === "history") return { kind: "ref_history", slug: value };
+    if (sub === "new") return { kind: "ref_new", query: value };
+    return { kind: "ref_refresh", slug: value };
+  }
+
+  // Everything else is a `reply` command: product query + an optional
+  // arrival preset + `--discord`/`--direct`, order-independent and
+  // scanned across the whole body (not just the first line) so an
+  // accidental line break in a pasted query doesn't split a flag off.
+  const allTokens = body.split(/\s+/).filter((token) => token.length > 0);
+  let discord = false;
+  let direct = false;
+  let arrival: ArrivalPresetKey | null = null;
+  const queryWords: string[] = [];
+
+  for (const token of allTokens) {
+    if (token.startsWith("--")) {
+      const flag = token.toLowerCase();
+      if (!KNOWN_FLAGS.has(flag)) return unknownCommand(rawText, `不明なフラグです: ${token}`);
+      if (flag === "--discord") discord = true;
+      else direct = true;
+      continue;
+    }
+    const preset = ARRIVAL_PRESET_BY_TOKEN[token];
+    if (preset !== undefined) {
+      if (arrival !== null && arrival !== preset) {
+        return unknownCommand(rawText, "到着予定日の指定が複数あります。一つにしてください。");
+      }
+      arrival = preset;
+      continue;
+    }
+    queryWords.push(token);
+  }
+
+  const query = queryWords.join(" ").trim();
+  if (query === "") return unknownCommand(rawText, "製品名またはURLを指定してください。");
+
+  return { kind: "reply", query, discord, direct, arrival };
 }
 
 /**
@@ -28,5 +175,233 @@ export function parseCommand(rawText: string, botUserId: string): ParsedCommand 
  * issue #1 decision 8.
  */
 export function isAdminUser(env: Env, userId: string): boolean {
-  throw new Error("not implemented: isAdminUser");
+  return parseCommaSeparated(env.SLACK_ADMIN_USER_IDS).includes(userId);
+}
+
+/* -------------------------------------------------------------------------
+ * Arrival dates -- JST (UTC+9), computed from an injected clock.
+ * ---------------------------------------------------------------------- */
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Index = the JST-shifted timestamp's `getUTCDay()` (0 = Sunday), matching data/seed/source-skill.md's `days_jp` table. */
+const WEEKDAY_KANJI: readonly string[] = ["日", "月", "火", "水", "木", "金", "土"];
+
+const ARRIVAL_PRESET_KANJI: Record<ArrivalPresetKey, string> = {
+  tomorrow: "明日",
+  day_after_tomorrow: "明後日",
+  day_after_day_after_tomorrow: "明々後日",
+};
+
+/** Display order for the three quick-pick buttons — also the iteration order computeArrivalPresetOptions returns. */
+export const ARRIVAL_PRESET_ORDER: readonly ArrivalPresetKey[] = [
+  "tomorrow",
+  "day_after_tomorrow",
+  "day_after_day_after_tomorrow",
+];
+
+const ARRIVAL_PRESET_OFFSET_DAYS: Record<ArrivalPresetKey, number> = {
+  tomorrow: 1,
+  day_after_tomorrow: 2,
+  day_after_day_after_tomorrow: 3,
+};
+
+export interface ArrivalPresetOption {
+  preset: ArrivalPresetKey;
+  /** e.g. "明後日月曜" — matches src/reply/templates.ts ArrivalScheduleParts.dayLabel. */
+  dayLabel: string;
+  month: number;
+  day: number;
+  /** e.g. "明後日月曜 8/18" — the Slack button label (data/seed/source-skill.md "Ask Shipping Details": day+weekday, space, M/D). */
+  buttonLabel: string;
+}
+
+/**
+ * The three preset arrival-date options (明日/明後日/明々後日), computed in
+ * JST at call time from the injected clock — never `new Date()` directly,
+ * so a test can freeze the clock across a UTC-midnight or month boundary
+ * and still get deterministic labels.
+ */
+export function computeArrivalPresetOptions(now: () => Date): ArrivalPresetOption[] {
+  const nowMs = now().getTime();
+  return ARRIVAL_PRESET_ORDER.map((preset) => {
+    const shifted = new Date(nowMs + JST_OFFSET_MS + ARRIVAL_PRESET_OFFSET_DAYS[preset] * DAY_MS);
+    const month = shifted.getUTCMonth() + 1;
+    const day = shifted.getUTCDate();
+    const dayLabel = `${ARRIVAL_PRESET_KANJI[preset]}${WEEKDAY_KANJI[shifted.getUTCDay()]!}曜`;
+    return { preset, dayLabel, month, day, buttonLabel: `${dayLabel} ${month}/${day}` };
+  });
+}
+
+const ARRIVAL_ARG_SEPARATOR = "|";
+
+/**
+ * Packs a resolved (not a preset key) arrival option into a button-value
+ * arg: `dayLabel|month|day`. Carrying the *resolved* date, not just the
+ * preset key, is deliberate — the button label already committed to a
+ * concrete M/D at render time (issue #14: "computed ... at render time"),
+ * and a click could land minutes or hours later (immediate delivery is
+ * an optimization, the cron sweep is the contract); recomputing "明日"
+ * from `now()` again at click time could silently disagree with what the
+ * button visibly said if a day boundary was crossed in between.
+ */
+export function encodeArrivalOptionArg(option: Pick<ArrivalPresetOption, "dayLabel" | "month" | "day">): string {
+  return [option.dayLabel, String(option.month), String(option.day)].join(ARRIVAL_ARG_SEPARATOR);
+}
+
+/** The inverse of encodeArrivalOptionArg — returns null on any malformed input rather than throwing (a stale/tampered button click must never crash the interactions route). */
+export function decodeArrivalOptionArg(
+  arg: string,
+): { dayLabel: string; month: number; day: number } | null {
+  const parts = arg.split(ARRIVAL_ARG_SEPARATOR);
+  if (parts.length !== 3) return null;
+  const [dayLabel, monthText, dayText] = parts;
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!dayLabel || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  return { dayLabel, month, day };
+}
+
+/* -------------------------------------------------------------------------
+ * Button value envelope -- epic issue #1 decision 8: "a button `value`
+ * is a compact JSON envelope with an id, never content."
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Slack rejects a button `value` over 2000 chars (invalid_blocks) — the
+ * same ceiling src/slack/blocks.ts's (non-exported) MAX_BUTTON_VALUE_CHARS
+ * enforces for the missing-ref flow; restated here per that file's own
+ * precedent of not sharing the literal across files.
+ */
+export const MAX_BUTTON_VALUE_CHARS = 2_000;
+
+export interface ButtonValueEnvelope {
+  v: 1;
+  /**
+   * Opaque id the click needs to recover its context — a `jobs.id`
+   * (stringified) for arrival_pick/arrival_other/variant_pick/
+   * candidate_pick, or a `ref_drafts.id` (uuid) for ref_approve/
+   * ref_reject. Never the reference body or reply text itself.
+   */
+  id: string;
+  /** Action-specific argument, e.g. an encoded arrival option, a chosen candidate slug, or "built"/"kit". */
+  a?: string;
+}
+
+/** Throws rather than silently truncating — an oversized envelope is a bug in the caller, not something to ship a corrupted button over. */
+export function encodeButtonValue(envelope: ButtonValueEnvelope): string {
+  const raw = JSON.stringify(envelope);
+  if (raw.length > MAX_BUTTON_VALUE_CHARS) {
+    throw new Error(
+      `button value envelope exceeds Slack's ${MAX_BUTTON_VALUE_CHARS}-char cap (${raw.length} chars, id=${envelope.id})`,
+    );
+  }
+  return raw;
+}
+
+/** The inverse of encodeButtonValue. Returns null (never throws) for anything that isn't our envelope shape — including plain-string button values like src/slack/blocks.ts's CREATE_REFERENCE_ACTION_ID, and any tampered/stale click. */
+export function decodeButtonValue(raw: string): ButtonValueEnvelope | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  if (record.v !== 1 || typeof record.id !== "string" || record.id === "") return null;
+  if (record.a !== undefined && typeof record.a !== "string") return null;
+  return record.a === undefined ? { v: 1, id: record.id } : { v: 1, id: record.id, a: record.a };
+}
+
+/* -------------------------------------------------------------------------
+ * Interactive picker blocks -- shared between the initial post
+ * (src/jobs/worker.ts) and a chained re-post after a variant/candidate
+ * click resolves which product was actually meant
+ * (src/slack/interactions.ts).
+ * ---------------------------------------------------------------------- */
+
+/** Stable action_id bases (issue #14: "action_ids are stable across redeploys"). Multi-option rows suffix `_${index}` (see src/slack/blocks.ts buildArrivalDateBlocks) — click routing matches on the prefix, never the exact suffixed id, so which button is which is JSON-envelope; encoded (`a`), not action_id-encoded. */
+export const ACTION_IDS = {
+  arrivalPick: "arrival_pick",
+  arrivalOther: "arrival_other",
+  refApprove: "ref_approve",
+  refReject: "ref_reject",
+  variantPick: "variant_pick",
+  candidatePick: "candidate_pick",
+} as const;
+
+/**
+ * Builds the arrival-date quick-pick message for a `reply` job whose
+ * product needs an arrival date but none was given in the mention text.
+ * `small`-category products never reach this — the caller skips the
+ * question entirely for those (issue #14).
+ */
+export function buildArrivalPickerPayload(jobId: number, now: () => Date): SlackMessagePayload {
+  const options = computeArrivalPresetOptions(now);
+  const promptBlock = {
+    type: "section",
+    block_id: "arrival_prompt",
+    text: { type: "mrkdwn", text: "到着予定日を選択してください。" },
+  };
+  const presetBlocks = buildArrivalDateBlocks({
+    blockId: "arrival_pick_block",
+    actionId: ACTION_IDS.arrivalPick,
+    options: options.map((option) => ({
+      label: option.buttonLabel,
+      value: encodeButtonValue({ v: 1, id: String(jobId), a: encodeArrivalOptionArg(option) }),
+    })),
+  });
+  const otherBlock = {
+    type: "actions",
+    block_id: "arrival_other_block",
+    elements: [
+      {
+        type: "button",
+        action_id: ACTION_IDS.arrivalOther,
+        text: { type: "plain_text", text: "その他", emoji: true },
+        value: encodeButtonValue({ v: 1, id: String(jobId) }),
+      },
+    ],
+  };
+  return buildMessagePayload([promptBlock, ...presetBlocks, otherBlock], "到着予定日を選択してください。");
+}
+
+/** Built vs kit disambiguation for a `general-diy` product the resolver couldn't decide on its own (src/refs/resolve.ts "variant-ambiguous"). */
+export function buildVariantPickerPayload(jobId: number, displayName: string): SlackMessagePayload {
+  const promptBlock = {
+    type: "section",
+    block_id: "variant_prompt",
+    text: {
+      type: "mrkdwn",
+      text: `「${escapeMrkdwn(displayName)}」は完成品とDIYキットの両方があります。どちらが購入されましたか？`,
+    },
+  };
+  const pickerBlocks = buildArrivalDateBlocks({
+    blockId: "variant_pick_block",
+    actionId: ACTION_IDS.variantPick,
+    options: [
+      { label: "完成品", value: encodeButtonValue({ v: 1, id: String(jobId), a: "built" }) },
+      { label: "DIYキット", value: encodeButtonValue({ v: 1, id: String(jobId), a: "kit" }) },
+    ],
+  });
+  return buildMessagePayload([promptBlock, ...pickerBlocks], `${displayName} の購入形態を確認してください。`);
+}
+
+/** Candidate disambiguation for a query the resolver matched to more than one product (src/refs/resolve.ts "ambiguous"). */
+export function buildCandidatePickerPayload(jobId: number, candidateSlugs: readonly string[]): SlackMessagePayload {
+  const promptBlock = {
+    type: "section",
+    block_id: "candidate_prompt",
+    text: { type: "mrkdwn", text: "複数の製品候補が見つかりました。該当するものを選択してください。" },
+  };
+  const pickerBlocks = buildArrivalDateBlocks({
+    blockId: "candidate_pick_block",
+    actionId: ACTION_IDS.candidatePick,
+    options: candidateSlugs.map((slug) => ({
+      label: slug,
+      value: encodeButtonValue({ v: 1, id: String(jobId), a: slug }),
+    })),
+  });
+  return buildMessagePayload([promptBlock, ...pickerBlocks], "複数の製品候補があります。該当するものを選択してください。");
 }

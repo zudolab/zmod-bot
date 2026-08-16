@@ -208,6 +208,18 @@ export async function postEphemeral(deps: SlackApiDeps, input: PostEphemeralInpu
   return { ts: body.message_ts };
 }
 
+export interface OpenViewInput {
+  /** From a `block_actions` interaction payload's `trigger_id` — valid for only a few seconds after the click. */
+  triggerId: string;
+  /** A Block Kit modal `view` object — deliberately untyped here (this file doesn't own view-building, src/slack/interactions.ts does). */
+  view: Record<string, unknown>;
+}
+
+/** POSTs to `views.open` — opens a modal in response to a block_actions click's trigger_id. Used by src/slack/interactions.ts for the arrival_other "その他" custom-answer flow (issue #14). */
+export async function openView(deps: SlackApiDeps, input: OpenViewInput): Promise<void> {
+  await callSlackApi(deps, "views.open", { trigger_id: input.triggerId, view: input.view });
+}
+
 export interface ResponseUrlPayload {
   text?: string;
   blocks?: unknown[];

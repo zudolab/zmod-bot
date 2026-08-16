@@ -35,16 +35,20 @@ describe("Worker entry routing", () => {
     expect(response.status).toBe(500);
   });
 
-  // Interactions (issue #14) is still a stub — this proves the routing
-  // wiring is correct without implementing any Slack logic here. Turns
-  // into a real assertion once #14 fills in the handler.
-  it("routes POST /slack/interactions to the interactions handler stub", async () => {
-    await expect(
-      worker.fetch(
-        new Request("https://example.com/slack/interactions", { method: "POST" }),
-        fakeEnv,
-        fakeCtx,
-      ),
-    ).rejects.toThrow("not implemented: handleSlackInteractions");
+  // Issue #14 implemented the interactions handler — full behavior
+  // coverage (signature verification, idempotency, admin gating) lives
+  // in src/slack/interactions.test.ts. This is only a routing-wiring
+  // smoke test, mirroring the /slack/events test above it: reaching the
+  // real handler with a bare fakeEnv (no SLACK_SIGNING_SECRET configured)
+  // surfaces its deployment-error path, proving this route is no longer
+  // the stub.
+  it("routes POST /slack/interactions to the real interactions handler", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/slack/interactions", { method: "POST" }),
+      fakeEnv,
+      fakeCtx,
+    );
+
+    expect(response.status).toBe(500);
   });
 });
