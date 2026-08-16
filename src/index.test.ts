@@ -19,16 +19,25 @@ describe("Worker entry routing", () => {
     expect(response.status).toBe(404);
   });
 
-  // These two prove the routing wiring is correct — reaching the intended
-  // stub handler — without implementing any Slack logic here. Each turns
-  // into a real assertion once its owning sub-task (#6, #14) fills in the
-  // handler.
-  it("routes POST /slack/events to the events handler stub", async () => {
-    await expect(
-      worker.fetch(new Request("https://example.com/slack/events", { method: "POST" }), fakeEnv, fakeCtx),
-    ).rejects.toThrow("not implemented: handleSlackEvents");
+  // Issue #6 implemented the events handler — full behavior coverage
+  // (signature verification, filtering, durable intake) lives in
+  // src/slack/events.test.ts. This is only a routing-wiring smoke test:
+  // reaching the real handler with a bare fakeEnv (no SLACK_SIGNING_SECRET
+  // configured) surfaces its deployment-error path, proving this route is
+  // no longer the stub.
+  it("routes POST /slack/events to the real events handler", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/slack/events", { method: "POST" }),
+      fakeEnv,
+      fakeCtx,
+    );
+
+    expect(response.status).toBe(500);
   });
 
+  // Interactions (issue #14) is still a stub — this proves the routing
+  // wiring is correct without implementing any Slack logic here. Turns
+  // into a real assertion once #14 fills in the handler.
   it("routes POST /slack/interactions to the interactions handler stub", async () => {
     await expect(
       worker.fetch(
