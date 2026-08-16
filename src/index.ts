@@ -4,7 +4,7 @@
  * Routes:
  *   POST /slack/events        -> src/slack/events.ts        (Events API: app_mention, URL verification)
  *   POST /slack/interactions  -> src/slack/interactions.ts  (Block Kit button clicks, modal submissions)
- *   GET  /health               -> literal 200, no dependencies
+ *   GET  /health               -> src/health.ts (D1 round-trip + migration state)
  *   everything else            -> 404 (src/router.ts default)
  *
  * The cron trigger (wrangler.jsonc `triggers.crons`) runs the delivery-
@@ -17,12 +17,13 @@ import type { Env } from "./env";
 import { Router } from "./router";
 import { handleSlackEvents } from "./slack/events";
 import { handleSlackInteractions } from "./slack/interactions";
+import { handleHealth } from "./health";
 import { runScheduledSweep } from "./jobs/worker";
 
 const router = new Router()
   .post("/slack/events", handleSlackEvents)
   .post("/slack/interactions", handleSlackInteractions)
-  .get("/health", () => Response.json({ ok: true }));
+  .get("/health", handleHealth);
 
 export default {
   async fetch(request, env, ctx) {

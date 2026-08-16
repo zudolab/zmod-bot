@@ -37,6 +37,8 @@ import {
   computeArrivalPresetOptions,
   decodeArrivalOptionArg,
   decodeButtonValue,
+  decodePriorChoice,
+  encodePriorChoice,
   isAdminUser,
   parseCommand,
   buildArrivalPickerPayload,
@@ -269,6 +271,10 @@ async function handleBlockActions(
         jobId: envelope.id,
         channelId: click.channelId,
         messageTs: click.messageTs,
+        // Carried forward from a chained variant_pick/candidate_pick
+        // click, so the modal's view_submission doesn't lose it either
+        // — see ButtonValueEnvelope.p.
+        priorChoice: envelope.p,
       }).catch((error) => log("error", "interactions: openArrivalModal failed", { error: errorText(error) })),
     );
     return ack();
@@ -278,10 +284,19 @@ async function handleBlockActions(
     const envelope = decodeButtonValue(click.value);
     const parts = envelope?.a ? decodeArrivalOptionArg(envelope.a) : null;
     if (!envelope || !parts) return ack();
+    // A variant_pick/candidate_pick click for a product that *also*
+    // needed an arrival date chains into this same picker (see
+    // finishReplyAfterInteraction below) — recover that choice here
+    // rather than letting the re-resolution below silently lose it
+    // (issue #12; for variant_pick specifically this defaulted to
+    // "built" even when the customer had just clicked "kit").
+    const prior = decodePriorChoice(envelope.p);
     deps.waitUntil(
       finishReplyAfterInteraction(env, repoDeps, deps, {
         jobId: Number(envelope.id),
         arrivalSchedule: formatArrivalSchedule(parts),
+        candidateSlugOverride: prior.candidateSlug,
+        variantOverride: prior.variant,
         channelId: click.channelId,
         messageTs: click.messageTs,
         responseUrl: click.responseUrl,
@@ -500,7 +515,17 @@ async function finishReplyAfterInteraction(
     // Resolved which product/variant, but still need an arrival date --
     // chain into the same picker the initial reply-job post would have
     // shown (src/jobs/worker.ts composeMatchPayload's mirror image).
-    await updateOriginalMessage(deps, slackApiDeps, ctx, buildArrivalPickerPayload(job.id, deps.now));
+    // job.raw_text never changes, so if *this* resolution came from a
+    // candidate/variant click rather than an unambiguous match, that
+    // choice must ride along on the picker's own buttons (issue #12) --
+    // otherwise the arrival_pick click that follows re-derives the
+    // product from the still-ambiguous raw text and silently loses it.
+    const priorChoice = ctx.candidateSlugOverride
+      ? encodePriorChoice({ kind: "candidate", slug: ctx.candidateSlugOverride })
+      : ctx.variantOverride
+        ? encodePriorChoice({ kind: "variant", variant: ctx.variantOverride })
+        : undefined;
+    await updateOriginalMessage(deps, slackApiDeps, ctx, buildArrivalPickerPayload(job.id, deps.now, priorChoice));
     return;
   }
 
@@ -526,6 +551,8 @@ interface ArrivalModalMetadata {
   jobId: string;
   channelId: string;
   messageTs: string;
+  /** Carried forward from a chained variant_pick/candidate_pick click — see ButtonValueEnvelope.p. */
+  priorChoice?: string;
 }
 
 function encodeModalMetadata(meta: ArrivalModalMetadata): string {
@@ -544,19 +571,25 @@ function decodeModalMetadata(raw: string): ArrivalModalMetadata | null {
   const channelId = stringField(parsed, "channelId");
   const messageTs = stringField(parsed, "messageTs");
   if (jobId === "") return null;
-  return { jobId, channelId, messageTs };
+  const priorChoice = stringField(parsed, "priorChoice");
+  return { jobId, channelId, messageTs, ...(priorChoice === "" ? {} : { priorChoice }) };
 }
 
 async function openArrivalModal(
   slackApiDeps: SlackApiDeps,
-  ctx: { triggerId: string; jobId: string; channelId: string; messageTs: string },
+  ctx: { triggerId: string; jobId: string; channelId: string; messageTs: string; priorChoice?: string },
 ): Promise<void> {
   await openView(slackApiDeps, {
     triggerId: ctx.triggerId,
     view: {
       type: "modal",
       callback_id: ARRIVAL_MODAL_CALLBACK_ID,
-      private_metadata: encodeModalMetadata({ jobId: ctx.jobId, channelId: ctx.channelId, messageTs: ctx.messageTs }),
+      private_metadata: encodeModalMetadata({
+        jobId: ctx.jobId,
+        channelId: ctx.channelId,
+        messageTs: ctx.messageTs,
+        ...(ctx.priorChoice === undefined ? {} : { priorChoice: ctx.priorChoice }),
+      }),
       title: { type: "plain_text", text: "到着予定日" },
       submit: { type: "plain_text", text: "送信" },
       close: { type: "plain_text", text: "キャンセル" },
@@ -650,10 +683,16 @@ async function handleViewSubmission(
   const isNew = await recordInteractionReceipt(repoDeps, { id: receiptId, eventType: "view_submission" });
   if (!isNew) return ack();
 
+  // Same recovery as the arrival_pick branch above, carried instead
+  // through the modal's private_metadata (issue #12) — see
+  // ArrivalModalMetadata.priorChoice.
+  const prior = decodePriorChoice(metadata.priorChoice);
   deps.waitUntil(
     finishReplyAfterInteraction(env, repoDeps, deps, {
       jobId: Number(metadata.jobId),
       arrivalSchedule,
+      candidateSlugOverride: prior.candidateSlug,
+      variantOverride: prior.variant,
       channelId: metadata.channelId,
       messageTs: metadata.messageTs,
     }).catch((error) => log("error", "interactions: arrival_other submission failed", { error: errorText(error) })),
