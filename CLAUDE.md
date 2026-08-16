@@ -59,6 +59,12 @@ Build plan and the full sub-issue breakdown: issue #1.
   the statement and it silently truncates — no error, just a missing table. Use `/* */` block
   comments instead. `migrations/0001_init.sql` is written this way; keep every later migration
   (including the generated seed migration) the same.
+- **Never embed a raw newline inside a migration's string literal.** Same root cause, worse
+  consequence — found in #9. The whitespace-collapse does not spare bytes inside quotes, so a
+  blank-line paragraph break in a multi-line value silently becomes a single space and the row is
+  stored corrupted, with no error anywhere. Encode multi-line text as single-line literals joined by
+  SQLite's `char(10)`, as `scripts/build-seed-migration.mjs` does. This only bites values written
+  *in a migration*; parameterised binds through `src/db/repos.ts` are unaffected.
 - **Pin crypto and absence assertions to something outside the code under test.** A sign-then-verify
   round trip passes even when the base string is built wrong, and an absence assertion can be tripped
   by its own fixture. Use independently-computed known-answer vectors (see #6), and grep
