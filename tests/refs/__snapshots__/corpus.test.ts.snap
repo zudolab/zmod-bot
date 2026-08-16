@@ -1,0 +1,1767 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the seed corpus > addac107 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "ADDAC107",
+    "ADDAC 107",
+    "addac107",
+    "ADDAC107 ACID Source",
+    "ACID Source",
+    "acid source",
+  ],
+  "category": "general",
+  "displayName": "ADDAC System: ADDAC107 ACID Source",
+  "productUrl": "https://takazudomodular.com/products/addac107-acid-source-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "ADDAC107 ACID Sourceは、TB-303を彷彿とさせるアシッドサウンドを生み出すモジュール。VCO／VCF／VCAが1モジュール内にコンパクトにまとまっており、VCAの独特なクリップサウンド設計がフィルターのレゾナンスと噛み合うのが特徴。完成品。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのADDAC107、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC107 ACID Source Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/addac107-acids/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ADDAC107について、当店サイトに紹介／解説記事を用意しております。VCAのクリップサウンドや内蔵フィルターとの組み合わせなど、このモジュールの特徴的な部分の解説をしておりますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC107 ACID Source 紹介／解説",
+          "url": "https://takazudomodular.com/products/addac107-acid-source-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Notes (additional)",
+      "literalBlocks": [],
+      "prose": "The official ADDAC107 demo video (https://youtu.be/6W3fEzyQJ4A) and a session video using ADDAC107 (https://youtu.be/h8X_eiDTypQ) are already embedded in the intro article at \`/products/addac107-acid-source-intro/\`, so do NOT add an Extra Resources section to the message — it makes the message verbose and redundant.",
+      "resources": [],
+    },
+  ],
+  "slug": "addac107",
+}
+`;
+
+exports[`the seed corpus > addac207-quantizer parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "ADDAC207",
+    "ADDAC 207",
+    "addac207",
+    "ADDAC207 Intuitive Quantizer",
+    "Intuitive Quantizer",
+    "addac207-quantizer",
+  ],
+  "category": "general",
+  "displayName": "ADDAC System: ADDAC207 Intuitive Quantizer",
+  "productUrl": "https://takazudomodular.com/products/addac207-quantizer-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "ADDAC207 Intuitive Quantizerは、4ボイスの直感的な（intuitive）操作のクオンタイザー。複数のオシレーターへ個別の1V/Octを渡せるほか、カスタムスケールの定義やコード生成用のノート間オフセット設定、11のユーザープリセット保存などが可能。パフォーマンス中の操作に適したサイズ感が特徴。完成品。奥行き52mmと深いのでケースの深さに注意。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのADDAC207、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC207 Intuitive Quantizer Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/addac207-quantizer",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ADDAC207について、当店サイトに紹介／解説記事を用意しております。4ボイスの扱いやカスタムスケール・コード生成など、このモジュールの魅力的なポイントを解説しておりますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC207 Intuitive Quantizer 紹介／解説",
+          "url": "https://takazudomodular.com/products/addac207-quantizer-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC207 セッション動画（OXI ONE + Vector Wave）",
+          "url": "https://youtu.be/5iHzqy926mw",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Notes (additional)",
+      "literalBlocks": [],
+      "prose": "The session video (https://youtu.be/5iHzqy926mw) is already embedded in the intro article at \`/products/addac207-quantizer-intro/\`, so do NOT add a separate Extra Resources / Videos section to the message — pointing to the intro article covers it and keeps the message from getting verbose.",
+      "resources": [],
+    },
+  ],
+  "slug": "addac207-quantizer",
+}
+`;
+
+exports[`the seed corpus > addac304 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "ADDAC304",
+    "ADDAC 304",
+    "addac304",
+    "addac304-built",
+    "addac304-diy",
+    "Manual Gates",
+  ],
+  "category": "general-diy",
+  "displayName": "ADDAC System: ADDAC304 Manual Gates",
+  "productUrl": "https://takazudomodular.com/products/addac304-manual-gates-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "ADDAC304 Manual Gatesは、8つのモーメンタリスイッチを持つマニュアルGate出力モジュール。ADDAC305の兄弟モジュールで、こちらはモーメンタリ式（押している間だけGate出力）。2／4／5／7番にはCV入力ジャックがあり、接続時はボタンを押している間だけ入力CVをそのまま出力する。完成品とDIYキットの両方を取り扱い。モジュール本体には特にマニュアルは用意されていません（紹介記事内に解説あり）。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Product Intro",
+      "introText": "ADDAC304について、当店サイトに紹介／解説記事を用意しております。よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC304 Manual Gates 紹介",
+          "url": "https://takazudomodular.com/products/addac304-manual-gates-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Manual",
+      "introText": "DIYキットの組み立てガイドについて、ADDAC System公式の英語版DIYガイドに日本語訳を付けたものを当店サイトにて公開しています。組み立ての際にはこちらをご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC304 Manual Gates: DIY Guide 日本語訳",
+          "url": "https://takazudomodular.com/manuals/addac304-manualgates-diy/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC304 Manual Gates: DIY Guide 日本語訳",
+          "url": "https://takazudomodular.com/manuals/addac304-manualgates-diy/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ほか、ADDAC304とADDAC305の各種機能について、ガイド記事のシリーズを用意しております。こちらモジュールの理解の際にご参照いただけますと幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC304 & ADDAC305 Manual Gates and Latches ガイド",
+          "url": "https://takazudomodular.com/guides/series/addac304-305-guide/",
+        },
+      ],
+    },
+  ],
+  "slug": "addac304",
+}
+`;
+
+exports[`the seed corpus > addac305 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "ADDAC305",
+    "ADDAC 305",
+    "addac305",
+    "addac305-built",
+    "addac305-diy",
+    "Manual Latches",
+  ],
+  "category": "general-diy",
+  "displayName": "ADDAC System: ADDAC305 Manual Latches",
+  "productUrl": "https://takazudomodular.com/products/addac305-manual-latches-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "ADDAC305 Manual Latchesは、8つのラッチスイッチを持つマニュアルGate出力モジュール。ADDAC304の兄弟モジュールで、こちらはラッチ式（押すたびにON／OFF切替）。完成品とDIYキットの両方を取り扱い。モジュール本体には特にマニュアルは用意されていません（紹介記事内に解説あり）。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Product Intro",
+      "introText": "ADDAC305について、当店サイトに紹介／解説記事を用意しております。よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC305 Manual Latches 紹介",
+          "url": "https://takazudomodular.com/products/addac305-manual-latches-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Manual",
+      "introText": "DIYキットの組み立てガイドについて、ADDAC System公式の英語版DIYガイドに日本語訳を付けたものを当店サイトにて公開しています。組み立ての際にはこちらをご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC305 Manual Latches: DIY Guide 日本語訳",
+          "url": "https://takazudomodular.com/manuals/addac305-latches-diy/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC305 Manual Latches: DIY Guide 日本語訳",
+          "url": "https://takazudomodular.com/manuals/addac305-latches-diy/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "ADDAC System公式YouTubeチャンネルにて、ADDAC304と本モジュールADDAC305の解説動画が公開されておりますので、合わせてご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System公式: ADDAC304 & ADDAC305 デモ動画",
+          "url": "https://youtu.be/VDPOMtE74KY",
+        },
+      ],
+    },
+  ],
+  "slug": "addac305",
+}
+`;
+
+exports[`the seed corpus > addac306 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "ADDAC306",
+    "ADDAC 306",
+    "addac306",
+    "ADDAC306 VC Transitions",
+    "VC Transitions",
+    "vc transitions",
+  ],
+  "category": "general",
+  "displayName": "ADDAC System: ADDAC306 VC Transitions",
+  "productUrl": "https://takazudomodular.com/products/addac306-vc-transitions-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "ADDAC306 VC Transitionsは、1本のスライダー（または1つのCV入力）で5チャンネルのCVを同時にスイープできる、8HPの電圧制御トランジション／マクロコントローラー。各チャンネルに個別のレンジ・向きを設定でき、ひとつの操作で複数パラメーターをまとめてモーフィングできる。完成品。モジュール本体に専用マニュアルはなし（紹介記事内に解説あり。zmanualsにも翻訳マニュアルなし）。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ADDAC306について、当店サイトに紹介／解説記事を用意しております。インターフェースの概要や活用例、DivKid氏によるデモ動画も掲載しておりますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ADDAC System: ADDAC306 VC Transitions 紹介／解説",
+          "url": "https://takazudomodular.com/products/addac306-vc-transitions-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Notes (additional)",
+      "literalBlocks": [],
+      "prose": "The DivKid demo video (https://youtu.be/SbQuvTydYws) is already embedded in the intro article at \`/products/addac306-vc-transitions-intro/\`, so do NOT add a separate Extra Resources / Videos section to the message — pointing to the intro article covers the video too.",
+      "resources": [],
+    },
+  ],
+  "slug": "addac306",
+}
+`;
+
+exports[`the seed corpus > ai-lpg parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "AI017",
+    "AI017 LPG",
+    "AI017 Low Pass Gate",
+    "ai-lpg",
+    "ai-lpg-built-alumi",
+    "ai-lpg-built-black",
+    "ai-lpg-diy-alumi",
+    "ai-lpg-diy-black",
+    "AI LPG",
+    "Low Pass Gate",
+  ],
+  "category": "general-diy",
+  "displayName": "AI Synthesis: AI017 Low Pass Gate",
+  "productUrl": "https://takazudomodular.com/products/ai-lpg-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "AI017はクラシックなBuchla 200シリーズローパスゲートのアップデート版。レゾナンス／Depthコントロールが追加され、スイッチでVCF／Low Pass Gate／VCAの3モードを切り替え可能。アルミ／黒パネルの2種、完成品とDIYキットの両方を取り扱い。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "AI017のマニュアルについて、当店にて日本語訳を用意しております。使い方等、こちらをご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI017 Low Pass Gate マニュアル（当店翻訳）",
+          "url": "https://takazudomodular.com/manuals/ai017-low-pass-gate",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "AI017について、当店サイトに紹介／解説記事を用意しております。モジュールの特徴や機能などをまとめておりますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI Synthesis: AI017 Low Pass Gate 紹介／解説記事",
+          "url": "https://takazudomodular.com/products/ai-lpg-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI017 Eurorack Low Pass Gate Build Guide（公式）",
+          "url": "https://aisynthesis.com/diy-low-pass-gate/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI Synthesis公式 AI017 デモ動画",
+          "url": "https://youtu.be/HW1LWf5xoIA",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Videos",
+      "introText": "AI Synthesis公式の組み立て動画に加え、当店でも組み立ての様子を撮った動画を用意しております。キットの雰囲気を感じていただけるかと思いますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI Synthesis公式 AI017 組み立て動画",
+          "url": "https://youtu.be/bvBlOdN_4s8",
+        },
+        {
+          "title": "当店による AI017 組み立て動画",
+          "url": "https://youtu.be/rHy9h23GLak",
+        },
+      ],
+    },
+  ],
+  "slug": "ai-lpg",
+}
+`;
+
+exports[`the seed corpus > ai-matrix parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "AI008",
+    "ai-matrix",
+    "ai-matrix-built-alumi",
+    "ai-matrix-built-black",
+    "ai-matrix-diy-alumi",
+    "ai-matrix-diy-black",
+    "Eurorack Matrix Mixer",
+    "Matrix Mixer",
+  ],
+  "category": "general-diy",
+  "displayName": "AI Synthesis: AI008 Eurorack Matrix Mixer",
+  "productUrl": "https://takazudomodular.com/products/ai-matrix-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのAI008 Eurorack Matrix Mixer、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI008 Eurorack Matrix Mixer: Manual（日本語訳付き）",
+          "url": "https://takazudomodular.com/manuals/ai008-matrix-mixer/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI008 Eurorack Matrix Mixer Build Guide",
+          "url": "https://aisynthesis.com/how-to-build-the-ai008-diy-matrix-mixer/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI Synthesis公式デモ動画",
+          "url": "https://youtu.be/PrGlEZt8CI4",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI008 ビルド組み立て動画（公式）",
+          "url": "https://youtu.be/DyuS2ePE0VM",
+        },
+        {
+          "title": "Takazudo組み立て動画",
+          "url": "https://youtu.be/WI6Chhu5bUg",
+        },
+      ],
+    },
+  ],
+  "slug": "ai-matrix",
+}
+`;
+
+exports[`the seed corpus > ai-mult parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "AI001",
+    "AI001 Multiple",
+    "ai-mult",
+    "ai-mult-built-alumi",
+    "ai-mult-built-black",
+    "ai-mult-diy-alumi",
+    "ai-mult-diy-black",
+    "AI Mult",
+    "Multiple",
+  ],
+  "category": "general-diy",
+  "displayName": "AI Synthesis: AI001 Multiple",
+  "productUrl": "https://takazudomodular.com/products/ai-mult-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Super simple passive multiple (2HP). For the **built** version, no product resources / guide links are needed in the reply — just the base template (shipping + arrival + evaluation request).",
+      "resources": [],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI001 Multiple Build Guide (公式)",
+          "url": "https://aisynthesis.com/ai001-multiple-build-guide/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI Synthesis公式 AI001 Multiple 組み立て動画",
+          "url": "https://youtu.be/mkWVKhYoU8k",
+        },
+      ],
+    },
+  ],
+  "slug": "ai-mult",
+}
+`;
+
+exports[`the seed corpus > ai-smatrix parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "AI018",
+    "ai-smatrix",
+    "ai-smatrix-built-alumi",
+    "ai-smatrix-built-black",
+    "ai-smatrix-diy-alumi",
+    "ai-smatrix-diy-black",
+    "Stereo Matrix Mixer",
+  ],
+  "category": "general-diy",
+  "displayName": "AI018 Stereo Matrix Mixer",
+  "productUrl": "https://takazudomodular.com/products/ai-smatrix-built-alumi/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのAI018 Stereo Matrix Mixer、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI018 Stereo Matrix Mixer: Manual（日本語訳付き）",
+          "url": "https://takazudomodular.com/manuals/ai018-stereo-matrix-mixer/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI018 Stereo Matrix Mixer Build Guide",
+          "url": "https://aisynthesis.com/diy-stereo-matrix-mixer/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI Synthesis公式デモ動画",
+          "url": "https://youtu.be/ceuGfmOO6OA",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "AI018 ビルド組み立て動画",
+          "url": "https://youtu.be/bgm7Ic1Mq-M",
+        },
+      ],
+    },
+  ],
+  "slug": "ai-smatrix",
+}
+`;
+
+exports[`the seed corpus > dplpg parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "DPLPG",
+    "Meng Qi DPLPG",
+    "meng-qi-dplpg",
+    "dplpg",
+  ],
+  "category": "general",
+  "displayName": "Meng Qi: DPLPG",
+  "productUrl": "https://takazudomodular.com/products/dplpg-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "DPLPGについて、当店の方で紹介／解説記事を用意しております。Low Pass Gateとはどういうものなのか、DPLPGの特徴や使い方の話などをまとめておりますので、ご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Meng Qi: DPLPGの紹介／解説記事",
+          "url": "https://takazudomodular.com/products/dplpg-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "また、当店の方でDPLPGの特徴が分かるようなデモ動画を用意しております。上記紹介記事内にも掲載しておりますが、単体でも以下よりご覧いただけます。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "DPLPG デモ動画（当店作成）",
+          "url": "https://youtu.be/LKrBRjWVYOo",
+        },
+      ],
+    },
+  ],
+  "slug": "dplpg",
+}
+`;
+
+exports[`the seed corpus > m3s parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "M3S",
+    "m3s",
+    "weston-m3s",
+    "Weston M3S",
+    "Mini Stereo Mixer",
+  ],
+  "category": "general",
+  "displayName": "Weston Precision Audio: M3S Mini Stereo Mixer",
+  "productUrl": "https://takazudomodular.com/products/m3s-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのM3S Mini Stereo Mixer、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Weston Precision Audio: M3S Mini Stereo Mixer マニュアル（日本語訳付き）",
+          "url": "https://takazudomodular.com/manuals/weston-m3s",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "M3Sについて、当店の方で紹介／解説記事を用意しております。合わせてご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Weston Precision Audio: M3S Mini Stereo Mixerの紹介／解説記事",
+          "url": "https://takazudomodular.com/products/m3s-intro/",
+        },
+      ],
+    },
+  ],
+  "slug": "m3s",
+}
+`;
+
+exports[`the seed corpus > meng-qi-honey parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Meng Qi Honey",
+    "Honey",
+    "meng-qi-honey",
+    "honey",
+  ],
+  "category": "small",
+  "displayName": "Meng Qi: Honey",
+  "productUrl": "https://takazudomodular.com/products/honey-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "Honeyについて、当店の方で紹介／解説記事を用意しております。Honeyのベースになっているという「Bytebeat」という考え方や、Honey自体の楽しみ方の話などをまとめておりますので、ご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Meng Qi: Honeyの紹介／解説記事",
+          "url": "https://takazudomodular.com/products/honey-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "また、当店の方でHoneyを実際に鳴らしてみている動画を用意しております。上記紹介記事内にも掲載しておりますが、単体でも以下よりご覧いただけます。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Honey 演奏デモ（当店作成）",
+          "url": "https://youtu.be/wqlXK4MomBM",
+        },
+      ],
+    },
+  ],
+  "slug": "meng-qi-honey",
+}
+`;
+
+exports[`the seed corpus > metamodule parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "MetaModule",
+    "Meta Module",
+    "4ms MetaModule",
+    "metamodule",
+  ],
+  "category": "general",
+  "displayName": "4ms Company: MetaModule",
+  "productUrl": "https://takazudomodular.com/products/metamodule-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのMetaModule、当店の方でユーザーマニュアル等を日本語訳し、サポートドキュメントとして以下にまとめております。ご使用の際にぜひご参考ください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "4ms MetaModuleサポートドキュメント",
+          "url": "https://takazudomodular.com/pj/metamodule-doc/docs/document",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "MetaModuleについて、当店の方で紹介／解説記事を用意しております。解説動画も掲載していますので、合わせてご参考にしていただけると幸いです。また、MetaModuleで使えるVCV Rackモジュールの一覧リファレンスも公開しています（新着）。プラグイン探しの際にご活用いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "4ms Company: MetaModuleの紹介／解説記事",
+          "url": "https://takazudomodular.com/products/metamodule-intro/",
+        },
+        {
+          "title": "MetaModule対応VCV Rackモジュール一覧",
+          "url": "https://takazudomodular.com/metamodule-ref/",
+        },
+      ],
+    },
+  ],
+  "slug": "metamodule",
+}
+`;
+
+exports[`the seed corpus > mordax-data parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Mordax DATA",
+    "DATA",
+    "data-black",
+    "data-silver",
+  ],
+  "category": "general",
+  "displayName": "Mordax DATA",
+  "productUrl": "https://takazudomodular.com/products/data-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "DATAについて、日本語訳付きのマニュアルを用意しております。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Data: Manual (日本語訳付き)",
+          "url": "https://takazudomodular.com/manuals/mordax-data/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "DATAの各種機能について、ガイド記事のシリーズを用意しております。こちらモジュールの理解の際にご参照いただけますと幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Mordax DATAガイド",
+          "url": "https://takazudomodular.com/guides/series/mordax-data-guide/",
+        },
+      ],
+    },
+  ],
+  "slug": "mordax-data",
+}
+`;
+
+exports[`the seed corpus > noisy-sproom-dsp parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Sproom DSP",
+    "Sproom",
+    "noisy-sproom-dsp",
+    "sproom-dsp",
+    "NoisyFruitsLab Sproom DSP",
+  ],
+  "category": "general",
+  "displayName": "NoisyFruitsLab: Sproom DSP",
+  "productUrl": "https://takazudomodular.com/products/sproom-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "Sproom DSPについて、当店の方で紹介／解説記事を用意しております。内蔵されている24種のエフェクト一覧や、各種デモ動画もこちらに掲載しておりますので、ご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "NoisyFruitsLab: Sproom DSPの紹介／解説記事",
+          "url": "https://takazudomodular.com/products/sproom-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "また、それぞれのアルゴリズムを切り替えた時の効果のデモを当店の方で用意しております。上記紹介記事内にも掲載しておりますが、単体でも以下よりご覧いただけます。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Sproom DSP エフェクトデモ（当店作成）",
+          "url": "https://youtu.be/ZFoWyRTMSas",
+        },
+      ],
+    },
+  ],
+  "slug": "noisy-sproom-dsp",
+}
+`;
+
+exports[`the seed corpus > oam-time-machine parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Time Machine",
+    "OAM Time Machine",
+    "Olivia Artz Modular Time Machine",
+    "oam-time-machine",
+    "time-machine",
+  ],
+  "category": "general",
+  "displayName": "Olivia Artz Modular: Time Machine",
+  "productUrl": "https://takazudomodular.com/products/time-machine-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "Time Machineについて、当店の方で紹介記事を用意しております。マニュアルの翻訳内容や各ノブ・CV入力の解説、使い方などをまとめておりますので、ご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Olivia Artz Modular: Time Machine 紹介記事",
+          "url": "https://takazudomodular.com/products/time-machine-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "また、当店の方でTime Machineの特徴が分かるデモ動画を用意しております。上記紹介記事内にも掲載しておりますが、単体でも以下よりご覧いただけます。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Time Machine デモ動画（当店作成）",
+          "url": "https://youtu.be/y5s1dvoqHOA",
+        },
+      ],
+    },
+  ],
+  "slug": "oam-time-machine",
+}
+`;
+
+exports[`the seed corpus > oam-vca-expander parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "VCA Expander",
+    "OAM VCA Expander",
+    "VCA Expander for Time Machine",
+  ],
+  "category": "general",
+  "displayName": "Olivia Artz Modular: VCA Expander for Time Machine",
+  "productUrl": "https://takazudomodular.com/products/oam-vca-expander-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "VCA Expanderについて、紹介記事を用意しております。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "紹介記事",
+          "url": "https://takazudomodular.com/products/oam-vca-expander-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Extra Resources",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Time Machine ファームウェアアップグレード手順",
+          "url": "https://takazudomodular.com/notes/oam-time-machine-firmware-upgrade-guide/",
+        },
+      ],
+      "separatorIntro": "VCA Expanderは、Time Machineのファームウェアv1.1.1以上が必要です。アップグレード手順については、以下の記事をご参照ください。",
+    },
+  ],
+  "slug": "oam-vca-expander",
+}
+`;
+
+exports[`the seed corpus > oxi-coral parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI Coral",
+    "OXI Coral Black",
+    "oxi-coral",
+    "oxi-coral-bk",
+  ],
+  "category": "general",
+  "displayName": "OXI Coral",
+  "productUrl": "https://takazudomodular.com/products/oxi-coral-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのOXI Coral、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI Coral: Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-coral/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ほか、OXI Coralのデモ動画をベースにしたガイドを当店サイトにて公開しています。よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI Coralガイド",
+          "url": "https://takazudomodular.com/guides/series/oxi-coral-guide/",
+        },
+      ],
+    },
+  ],
+  "slug": "oxi-coral",
+}
+`;
+
+exports[`the seed corpus > oxi-e16 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI E16",
+    "E16",
+    "oxi-e16",
+  ],
+  "category": "general",
+  "displayName": "OXI Instruments: OXI E16",
+  "productUrl": "https://takazudomodular.com/products/oxi-e16-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのOXI E16、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。クイックスタートと詳細マニュアルの2種類がありますので、合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI E16: User Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-e16-manual/",
+        },
+        {
+          "title": "OXI E16: Quick Start 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-e16-quick-start/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ほか、OXI E16の機能を解説したガイドシリーズを当店サイトにて公開しています。よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI E16ガイド",
+          "url": "https://takazudomodular.com/guides/series/oxi-e16-guide/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "ほか、OXI Instruments公式のデモ動画も公開されておりますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI E16 デモ動画1",
+          "url": "https://youtu.be/RXJSA0qLWLI",
+        },
+        {
+          "title": "OXI E16 デモ動画2",
+          "url": "https://youtu.be/x0m65yYww5Y",
+        },
+      ],
+    },
+  ],
+  "slug": "oxi-e16",
+}
+`;
+
+exports[`the seed corpus > oxi-meta parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI Meta",
+    "OXI Meta Black",
+    "oxi-meta",
+    "oxi-meta-bk",
+  ],
+  "category": "general",
+  "displayName": "OXI Instruments: OXI Meta",
+  "productUrl": "https://takazudomodular.com/products/oxi-meta-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのOXI Meta、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI Meta: Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-meta/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "OXI Metaについて、当店の方で紹介／解説記事を用意しております。私自身が使ってみた動画や解説動画も掲載していますので、合わせてご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI Instruments: OXI Metaの紹介／解説記事",
+          "url": "https://takazudomodular.com/products/oxi-meta-intro/",
+        },
+      ],
+    },
+  ],
+  "slug": "oxi-meta",
+}
+`;
+
+exports[`the seed corpus > oxi-one parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI ONE",
+    "OXI ONE (not MK2)",
+    "OXI ONE original",
+    "oxi-one",
+    "oxi-one-intro",
+  ],
+  "category": "general",
+  "displayName": "OXI ONE",
+  "productUrl": "https://takazudomodular.com/products/oxi-one-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのOXI ONE、当店の方で英語マニュアルとクイックガイドに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI ONE: Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-one-mk1",
+        },
+        {
+          "title": "OXI ONE: Quick Guide 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-one-mk1-quick-guide",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ほか、解説ガイドを当店の方で以下にて公開しています。こちらはMKII版を対象としたガイドですが、基本的な機能はオリジナル版のOXI ONEとほぼ同じですので、こちらをご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI ONE MKIIガイド | Takazudo Modular",
+          "url": "https://takazudomodular.com/guides/series/oxi-one-mkii-guide/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Extra Resources",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI ONEガイド (旧)",
+          "url": "https://takazudomodular.com/guides/series/oxi-one-guide/",
+        },
+        {
+          "title": "ZudoTV vol.3: Oxi ONE解説 その1: monoモードでモジュラー鳴らしつつ基本みたいな部分ざっと",
+          "url": "https://youtu.be/LChzegsDhjs?si=4GHXgve0XpVZaOzU",
+        },
+        {
+          "title": "ZudoTV vol.6: OXI ONE解説 その2: Multitrackモードでドラム類を鳴らす",
+          "url": "https://youtu.be/CXVtvO9Yo0c?si=OP0NB5mLRltfEMru",
+        },
+      ],
+      "separatorIntro": "その他、オリジナル版OXI ONE向けのリソースも共有しておきます。基本的な機能は同じなので、参考になりそうでしたらご参考にしていただければと。不明点等ございましたらお気軽にコメント等頂ければと存じます。",
+    },
+  ],
+  "slug": "oxi-one",
+}
+`;
+
+exports[`the seed corpus > oxi-one-mk2 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI ONE MKII",
+    "OXI ONE MK2",
+    "oxi-one-mk2",
+  ],
+  "category": "general",
+  "displayName": "OXI ONE MKII",
+  "productUrl": "https://takazudomodular.com/products/oxi-one-mk2-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのOXI ONE MKII、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI ONE MKII: Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/oxi-one-mk2",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ほか、OXI Instruments公式のチュートリアル動画に合わせたフォローアップガイドを以下にて公開しています。こちらもチェックしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI ONE MKIIガイド | Takazudo Modular",
+          "url": "https://takazudomodular.com/guides/series/oxi-one-mkii-guide/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Extra Resources",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI ONEガイド",
+          "url": "https://takazudomodular.com/guides/series/oxi-one-guide/",
+        },
+        {
+          "title": "ZudoTV vol.3: Oxi ONE解説 その1: monoモードでモジュラー鳴らしつつ基本みたいな部分ざっと",
+          "url": "https://youtu.be/LChzegsDhjs?si=4GHXgve0XpVZaOzU",
+        },
+        {
+          "title": "ZudoTV vol.6: OXI ONE解説 その2: Multitrackモードでドラム類を鳴らす",
+          "url": "https://youtu.be/CXVtvO9Yo0c?si=OP0NB5mLRltfEMru",
+        },
+        {
+          "title": "OXI ONE MKII: CVとGateの出力設定方法 | Takazudo Modularサポート",
+          "url": "https://youtu.be/t239zkTn-xo?si=kzJkuVJWM4uOnXGA",
+        },
+      ],
+      "separatorIntro": "その他、旧バージョンOXI ONE関連も含むリソースを共有しておきます。基本的な機能は同じなので、参考になりそうでしたらご参考にしていただければと。不明点等ございましたらお気軽にコメント等頂ければと存じます。",
+    },
+  ],
+  "slug": "oxi-one-mk2",
+}
+`;
+
+exports[`the seed corpus > oxi-pipe-mk2 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI Pipe MKII",
+    "OXI Pipe MK2",
+    "oxi-pipe-mk2",
+  ],
+  "category": "general",
+  "displayName": "OXI Pipe MKII",
+  "productUrl": "https://takazudomodular.com/products/oxi-pipe-mk2-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "The customer already knows exactly what this product is — do NOT include any intro/explanation or the intro-article link. Just include this note:
+
+- This module comes with an HDMI cable included.
+- Connect it to OXI ONE MKII with this cable.
+
+Suggested Japanese line: OXI Pipe MKIIにはHDMIケーブルが付属しておりますので、こちらでOXI ONE MKIIと接続してお使いいただけます。",
+      "resources": [],
+    },
+  ],
+  "slug": "oxi-pipe-mk2",
+}
+`;
+
+exports[`the seed corpus > oxi-split-v2 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "OXI Split V2",
+    "OXI Split",
+    "oxi-split-v2",
+  ],
+  "category": "general",
+  "displayName": "OXI Split V2",
+  "productUrl": "https://takazudomodular.com/products/oxi-split-v2-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Intro Article",
+      "introText": "OXI Split V2は、OXI ONE MKII用のMIDI入出力拡張デバイスでして、サイトに紹介記事を用意しております。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "OXI Instruments: OXI Split V2",
+          "url": "https://takazudomodular.com/products/oxi-split-v2-intro/",
+        },
+      ],
+    },
+  ],
+  "slug": "oxi-split-v2",
+}
+`;
+
+exports[`the seed corpus > recovery-analog-kick parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Analog Kick",
+    "Recovery Analog Kick",
+    "recovery-analog-kick",
+  ],
+  "category": "general",
+  "displayName": "Recovery Effects And Devices: Analog Kick",
+  "productUrl": "https://takazudomodular.com/products/recovery-analog-kick-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Recovery Effects And Devices製、アナログサウンドを手軽に扱える3HPの小型キックモジュール。FUNDAMENTAL（ピッチ、CV対応）とCONTOUR（減衰・音色）の2パラメーターで、タムのようなアタック感のあるパーカッションから、TR-808由来のベース的なキックサウンドまで生成可能。マニュアルは現状未翻訳。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "紹介記事",
+          "url": "https://takazudomodular.com/products/recovery-analog-kick-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "公式デモ動画（Recovery Effects And Devices）",
+          "url": "https://youtu.be/8htW4kW0aZY",
+        },
+      ],
+    },
+  ],
+  "slug": "recovery-analog-kick",
+}
+`;
+
+exports[`the seed corpus > ryk-algo parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "RYK Modular ALGO",
+    "RYK ALGO",
+    "ALGO",
+    "ryk-algo",
+    "ryk algo",
+  ],
+  "category": "general",
+  "displayName": "RYK Modular: ALGO",
+  "productUrl": "https://takazudomodular.com/products/ryk-algo/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Hand-built by Takazudo Modular from the official RYK Modular DIY kit (販売はメーカー許可済み)。完成後に動作確認を一通り行ったうえで出品しています。万が一おかしな点があればご連絡いただきたい旨を添えると安心です。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "ALGOについて、当店サイトに紹介／解説記事を用意しております。FMシンセとしての特長や、同じくRYKのVector Waveとの違いなどにも触れていますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: ALGO 紹介／解説",
+          "url": "https://takazudomodular.com/products/ryk-algo/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのALGO、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: ALGO Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/ryk-algo",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "ALGOを実際に鳴らしつつざっくり解説した動画を当店の方で撮影しております。使い方の細かい部分にもひと通り触れておりますので、合わせてご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "ALGO解説動画（当店作成）",
+          "url": "https://youtu.be/NGRYs1Wbfx8",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Notes (additional)",
+      "literalBlocks": [],
+      "prose": "Third-party reference videos (RYK Modular公式デモ, Cinematic Laboratory, Mylar Melodies, Takazudo's hard techno session) are already embedded in the intro article at \`/products/ryk-algo/\`, so do NOT add an Extra Resources section to the message — it makes the message verbose and redundant.",
+      "resources": [],
+    },
+  ],
+  "slug": "ryk-algo",
+}
+`;
+
+exports[`the seed corpus > ryk-envy parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Envy Machine",
+    "RYK Envy Machine",
+    "RYK Modular Envy Machine",
+    "Envy",
+    "ryk-envy",
+  ],
+  "category": "general-diy",
+  "displayName": "RYK Modular: Envy Machine",
+  "productUrl": "https://takazudomodular.com/products/envy-machine-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "Envy Machineについて、当店サイトに紹介／解説記事を用意しております。よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: Envy Machine 紹介",
+          "url": "https://takazudomodular.com/products/envy-machine-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのEnvy Machine、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: Envy Machine Manual（日本語訳付き）",
+          "url": "https://takazudomodular.com/manuals/ryk-envy/",
+        },
+      ],
+    },
+    {
+      "gate": "diy-only",
+      "heading": "Build Guide",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: Envy Machine DIY Kit Build Guide（日本語訳付き）",
+          "url": "https://takazudomodular.com/manuals/ryk-envy-diy/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "RYK Modular公式YouTubeチャンネルにて、本モジュールEnvy Machineのデモ動画が公開されておりますので、合わせてご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular公式: Envy Machine デモ動画",
+          "url": "https://youtu.be/kEKhmv9gNNw",
+        },
+      ],
+    },
+  ],
+  "slug": "ryk-envy",
+}
+`;
+
+exports[`the seed corpus > ryk-night-rider parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "RYK Modular Night Rider",
+    "RYK Night Rider",
+    "Night Rider",
+    "ryk-night-rider",
+    "night-rider",
+    "night rider",
+  ],
+  "category": "general",
+  "displayName": "RYK Modular: Night Rider",
+  "productUrl": "https://takazudomodular.com/products/night-rider-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Hand-built by Takazudo Modular (国内のビルダーさんと協力してDIYで作成、メーカーRYK Modularの販売許可済み)。完成後に動作確認を一通り行ったうえで出品しています。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "Night Riderについて、当店サイトに紹介／解説記事を用意しております。4チャンネルフィルターバンクとシーケンサーを組み合わせたモジュールの特長や操作のポイントなどに触れていますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: Night Rider 紹介／解説",
+          "url": "https://takazudomodular.com/products/night-rider-intro/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "こちらのNight Rider、当店の方で英語マニュアルに日本語訳を付けたものを以下にて公開しています。合わせてご参考いただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "RYK Modular: Night Rider Manual 日本語訳付き",
+          "url": "https://takazudomodular.com/manuals/ryk-night-rider/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Notes (additional)",
+      "literalBlocks": [],
+      "prose": "The official RYK Modular Night Rider demo video (https://youtu.be/FsPRJ3tVlMg) is already embedded in the intro article at \`/products/night-rider-intro/\`, so do NOT add an Extra Resources section to the message — it makes the message verbose and redundant.",
+      "resources": [],
+    },
+  ],
+  "slug": "ryk-night-rider",
+}
+`;
+
+exports[`the seed corpus > wingie2 parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "Wingie2",
+    "Wingie 2",
+    "Wingie",
+    "meng-qi-wingie2",
+    "Meng Qi Wingie2",
+    "wingie2-intro",
+  ],
+  "category": "general",
+  "displayName": "Meng Qi: Wingie2",
+  "productUrl": "https://takazudomodular.com/products/wingie2-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Meng Qi（孟奇）氏によるスタンドアロン型のステレオレゾネーター。モジュラーシンセではなく単体で動作する楽器で、内蔵マイク／LINE入力に対して4種類のレゾナンスモードで音響処理を行う。前面の鍵盤ボタンで直感的に音域を調整でき、MIDI TRS入力にも対応。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Manual",
+      "introText": "Wingie2のマニュアルについて、当店にて日本語訳を用意しております。使い方等、こちらをご参考にしていただけると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Wingie2 マニュアル（当店翻訳）",
+          "url": "https://takazudomodular.com/manuals/wingie2",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "Wingie2について、当店サイトに紹介／解説記事を用意しております。あわせて、公式動画に沿ってWingie2の使い方を解説するガイドシリーズも公開しておりますので、よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Meng Qi: Wingie2 紹介／解説記事",
+          "url": "https://takazudomodular.com/products/wingie2-intro/",
+        },
+        {
+          "title": "Wingie2ガイドシリーズ",
+          "url": "https://takazudomodular.com/guides/series/wingie2-guide/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Videos",
+      "introText": "当店にてWingie2を鳴らしている動画もいくつか用意しております。どんな音が鳴る機材か感じていただけるかと思いますので、よろしければご参考にしてください。（いずれも上記の紹介記事内でも視聴いただけます）",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "マイク入力をオーディオソースとしたデモ",
+          "url": "https://youtu.be/PDjr6rEkjYU",
+        },
+        {
+          "title": "Polyモードを使ったセッション",
+          "url": "https://youtu.be/hgVuH7URG2M",
+        },
+        {
+          "title": "各種モードを使ったセッション",
+          "url": "https://youtu.be/S3By1-BCSGw",
+        },
+      ],
+    },
+  ],
+  "slug": "wingie2",
+}
+`;
+
+exports[`the seed corpus > x0x-heart parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "x0x-heart",
+    "x0x heart",
+    "x0x-heart-2025",
+  ],
+  "category": "general",
+  "displayName": "x0x-heart",
+  "productUrl": "https://takazudomodular.com/products/x0x-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Hand-built by Takazudo Modular. Add a note asking the customer to contact if anything seems wrong.",
+      "resources": [],
+    },
+  ],
+  "slug": "x0x-heart",
+}
+`;
+
+exports[`the seed corpus > zb40-intro parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "zudo-block-40",
+    "zb40",
+    "zudo block 40",
+    "zudo-block-40-red-lite",
+  ],
+  "category": "small",
+  "displayName": "zudo-block-40",
+  "productUrl": "https://takazudomodular.com/products/zb40-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "40HP対応のアクリルボード製ユーロラックケースDIYキット（Takazudo Modular自社設計）。パネル・レール・金具一式の構成で、組み立てが必要。フラットに梱包できるためネコポス発送（small扱い）。組み立てが必要なため、build guideを必ず案内する。半田付けは不要なので、シンセDIY入門ガイドは案内しない。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Build Guide",
+      "introText": "本品の組み立て方法ですが、以下にステップバイステップで組み立て手順をまとめております。こちらを参考にしつつ、組み立てをお願い致します。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "zudo-block-40 / zudo-block-60 組み立て方法",
+          "url": "https://takazudomodular.com/guides/how-to-build-zudo-block/",
+        },
+      ],
+    },
+  ],
+  "slug": "zb40-intro",
+}
+`;
+
+exports[`the seed corpus > zudo-3u-to-1u parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "zudo 3u to 1u",
+    "3u-to-1u",
+    "3u to 1u",
+    "コンバーターパネル",
+  ],
+  "category": "small",
+  "displayName": "zudo-3u-to-1u",
+  "productUrl": "https://takazudomodular.com/products/zudo-3u-to-1u-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "Intellijelフォーマットの1Uスロットに、3Uモジュール（最大4HP幅）を設置出来るようにするコンバーターパネルセット。パネル×3、M3ネジ／プラスチックワッシャ／ナット各12付属。ネコポス発送（small）。Intellijel 1U（39.65mm）対応／Pulplogic・Doepfer 1U（43.2mm）非対応。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Usage Guide (取り付け方法)",
+      "literalBlocks": [],
+      "prose": "本製品は、横に長く空いている穴部分へ、3Uモジュールを取り付けて使用します。このパネル自体にはネジを止めるタップ（ネジを支える形状の溝）がありませんので、付属のネジとナットを使用し、裏側でネジをナットで固定してご使用ください。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Guides",
+      "introText": "詳しい使い方や設置例、対応フォーマット（Intellijel 1U）については、当店サイトの紹介記事にもまとめております。よろしければご参考にしてください。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "Takazudo Modular: zudo-3u-to-1u 紹介／解説記事",
+          "url": "https://takazudomodular.com/products/zudo-3u-to-1u-intro/",
+        },
+      ],
+    },
+  ],
+  "slug": "zudo-3u-to-1u",
+}
+`;
+
+exports[`the seed corpus > zudo-block-60-open parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "zb60 open",
+    "zb60-open",
+    "zudo-block-60-open",
+    "zudo block 60 open",
+  ],
+  "category": "small",
+  "displayName": "zudo-block-60 Open",
+  "productUrl": "https://takazudomodular.com/products/zb60-open-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Notes",
+      "literalBlocks": [],
+      "prose": "60HP対応のユーロラック用フレーム（電源・筐体なしのシンプル構成）。ネコポス発送。組み立てが必要なため、build guideを必ず案内する。",
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Build Guide",
+      "introText": "本品の組み立て方法ですが、以下にステップバイステップで組み立て手順をまとめております。こちらを参考にしつつ、組み立てをお願い致します。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "zudo-block-60 Open 組み立て方法",
+          "url": "https://takazudomodular.com/guides/how-to-build-zudo-block-60-open/",
+        },
+      ],
+    },
+  ],
+  "slug": "zudo-block-60-open",
+}
+`;
+
+exports[`the seed corpus > zudo-rail parses to a stable ProductRef 1`] = `
+{
+  "aliases": [
+    "zudo rail",
+    "ズドレール",
+  ],
+  "category": "small",
+  "displayName": "zudo-rail",
+  "productUrl": "https://takazudomodular.com/products/zudo-rail-intro/",
+  "sections": [
+    {
+      "gate": "always",
+      "heading": "Assembly Guide",
+      "introText": "組み立てにつきましては、以下をご参考に組み立ててくださいますよう、お願い致します。不明点等ありましたらお気軽にお声がけ頂けると幸いです。",
+      "literalBlocks": [],
+      "resources": [
+        {
+          "title": "zudo-rail 組み立て方法",
+          "url": "https://takazudomodular.com/guides/how-to-build-zudo-rail/",
+        },
+      ],
+    },
+    {
+      "gate": "always",
+      "heading": "Lite Version Renewal Notice (ALWAYS include for Lite variants)",
+      "literalBlocks": [
+        {
+          "rule": {
+            "kind": "variant-match",
+            "needles": [
+              "Lite",
+            ],
+          },
+          "ruleProse": "When the purchased product is a **Lite** variant (e.g. "zudo-rail lite 60 set1"), ALWAYS append the following notice after the assembly guide section. The site photos have not been updated yet to reflect the renewed Lite rail design.",
+          "text": "それとこちらの商品の一部であるレールの本体の形状についてなのですが、写真にあるのは以下のLite版のものなのですが、
+
+zudo-rail
+https://takazudomodular.com/products/zudo-rail-intro/
+
+この商品を直近でリニューアルしまして、ものとしてはほぼ同じなのですが、Nuts版のようにハネが付いたようなデザインの、新しいタイプのLite版レールをお送りさせて頂いています。サイトや商品写真の更新がおいついておらず、後からのご連絡になってしまいまして申し訳ないのですが、ものとしてはより使いやすいものかと考えておりまして、ご容赦願えればと存じます。",
+        },
+      ],
+      "resources": [],
+    },
+    {
+      "gate": "always",
+      "heading": "Fragility Notice (ALWAYS include — Lite and Nuts variants)",
+      "literalBlocks": [
+        {
+          "rule": {
+            "kind": "always",
+          },
+          "ruleProse": "Both **Lite** and **Nuts** rails are fragile (折れやすい). ALWAYS append the following notice for any zudo-rail purchase.",
+          "text": "なお、こちらのレールは構造上やや折れやすい部分がございまして、組み立てや取り付けの際は無理な力をかけないよう、お気を付け頂けますと幸いです。",
+        },
+      ],
+      "resources": [],
+    },
+  ],
+  "slug": "zudo-rail",
+}
+`;
