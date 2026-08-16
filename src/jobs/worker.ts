@@ -4,7 +4,7 @@
  * (src/jobs/queue.ts). Invoked both from `ctx.waitUntil` right after ack
  * (src/index.ts fetch — an optimization) and from the cron sweep
  * (src/index.ts scheduled — the contract). See CLAUDE.md "durable intent
- * before the ack". Implementation is issue #10's responsibility.
+ * before the ack".
  *
  * **At-least-once, deliberately.** Slack's `chat.postMessage` and the D1
  * `state = 'done'` write are two systems with no transaction spanning
@@ -17,24 +17,32 @@
  * would be a customer reply that silently never sends). Do not "fix"
  * this into ack-then-post.
  *
- * **Composing seam.** Issue #13 replaces the compose step with the
- * guarded LLM path (src/reply/compose.ts composeReply). Until then,
- * buildReplyJobPayload below wires straight to the deterministic
- * renderer (src/reply/render.ts) so the whole claim -> compose -> post
- * -> done path is exercisable end to end, per issue #10's brief. Two
- * inputs that path doesn't have a real source for yet are deliberately
- * NOT invented here (fabricating them risks needing to be undone by the
- * issue that actually owns them):
- *   - `ReplyFlags` (--discord/--direct): src/slack/commands.ts
- *     parseCommand is issue #14's responsibility and doesn't exist yet;
- *     flags default to false here.
- *   - the arrival-date sentence for non-`small` categories: nothing in
- *     this codebase computes it (see src/slack/blocks.ts
- *     buildArrivalDateBlocks — an interactive quick-pick, issue #14) —
- *     a `general`/`general-diy` reply job fails loudly instead of
- *     guessing a delivery date, which would risk shipping a wrong one to
- *     a paying customer. This surfaces as a normal job failure (retried,
- *     then dead) until #14 lands.
+ * **Composing seam.** `buildReplyJobPayload` below routes every `match`
+ * through src/reply/compose.ts `composeReply` (issue #13's guarded LLM
+ * path) rather than calling the deterministic renderer directly, and
+ * always forwards the injected clock (`now`) plus `purchased`/
+ * `variantText` — see composeMatchPayload. `composeReply` is injected
+ * (see `ComposeReplyFn` / `RunJobDeps.composeReply`) the same way
+ * `fetch`/`now`/`sleep` already are — every test here supplies a
+ * deterministic fake rather than exercising the real LLM/Workers AI
+ * call, per CLAUDE.md "Dependency injection at every I/O boundary".
+ * composeReply itself never throws for a guard trip, a provider outage,
+ * or a refusal (it falls back and reports `usedFallback: true` instead)
+ * — a throw reaching this module is a genuine caller error (e.g. a
+ * `general` reply with `arrivalSchedule: null`) and is left to fail
+ * loudly through the normal recordFailure path below, never caught or
+ * retried here.
+ *
+ * **Interactive follow-ups (issue #14).** A `general`/`general-diy`
+ * match with no arrival date in the mention text, a `variant-ambiguous`
+ * resolver result, and an `ambiguous` resolver result each post a
+ * quick-pick message instead of the final reply (src/slack/commands.ts
+ * buildArrivalPickerPayload / buildVariantPickerPayload /
+ * buildCandidatePickerPayload) — the job still completes (`done`): its
+ * job was to respond, and asking a question is a response. The click
+ * that follows is handled entirely by src/slack/interactions.ts, using
+ * the posted message's own `jobId` (carried in the button's value
+ * envelope) to look this job back up and finish composing.
  */
 import type { Env } from "../env";
 import { claimJobs, updateJobState, type RepoDeps } from "../db/repos";
@@ -42,15 +50,26 @@ import { errorSnippet, log } from "../ops/log";
 import type { JobRow, JobState } from "../db/schema";
 import { resolveProductRef, type ResolveResult } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
+import type { ProductRef } from "../refs/model";
 import {
   buildMissingRefBlocks,
   buildMessagePayload,
   buildReplyMessagePayload,
+  escapeMrkdwn,
   type SlackMessagePayload,
 } from "../slack/blocks";
 import { postMessage, type SlackApiDeps } from "../slack/api";
-import { renderDeterministicReply } from "../reply/render";
-import type { ReplyFlags } from "../reply/templates";
+import {
+  buildArrivalPickerPayload,
+  buildCandidatePickerPayload,
+  buildVariantPickerPayload,
+  computeArrivalPresetOptions,
+  parseCommand,
+  USAGE_TEXT,
+  type ParsedCommand,
+} from "../slack/commands";
+import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
+import { formatArrivalSchedule } from "../reply/templates";
 import type { FetchLike, NowFn, SleepFn } from "../types";
 import {
   CLAIM_BATCH_SIZE,
@@ -61,12 +80,17 @@ import {
 } from "./queue";
 import { runRetentionSweep } from "./retention";
 
+/** The shape of src/reply/compose.ts's composeReply — injected so tests can fake issue #13's (currently throwing) real implementation. See the module comment. */
+export type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
+
 export interface RunDeliveryPassDeps {
   env: Env;
   fetch: FetchLike;
   now: NowFn;
   /** Injected so Slack retry backoff (see src/slack/api.ts) runs instantly in tests; defaults to a real timer. */
   sleep?: SleepFn;
+  /** Injected compose step — defaults to the real src/reply/compose.ts composeReply. See ComposeReplyFn. */
+  composeReply?: ComposeReplyFn;
 }
 
 export interface RunDeliveryPassResult {
@@ -80,8 +104,7 @@ export interface RunDeliveryPassResult {
  * RunDeliveryPassDeps that doesn't include `env` (passed separately,
  * since it also carries bindings like `DB`).
  */
-type RunJobDeps = { fetch: FetchLike; now: NowFn; sleep?: SleepFn };
-
+export type RunJobDeps = { fetch: FetchLike; now: NowFn; sleep?: SleepFn; composeReply?: ComposeReplyFn };
 
 /**
  * Strips a leading `<@BOT_ID>` mention, matching src/slack/events.ts
@@ -93,49 +116,118 @@ function stripMention(text: string): string {
   return text.replace(MENTION_PREFIX, "").trim();
 }
 
+/** A plain mrkdwn `section` message — used for operational replies (help/usage/unknown-command) that are never the customer-facing reply body, so the rich_text_preformatted rule (CLAUDE.md) does not apply. */
+function buildTextMessagePayload(text: string, summaryText: string): SlackMessagePayload {
+  return buildMessagePayload(
+    [{ type: "section", block_id: "bot_text", text: { type: "mrkdwn", text } }],
+    summaryText,
+  );
+}
+
+/**
+ * Resolves a `match`'d product ref + parsed command into either a final
+ * composed reply, or — when the category needs an arrival date and none
+ * was supplied — the arrival-picker payload instead. Shared by
+ * buildReplyJobPayload (the initial post) and
+ * src/slack/interactions.ts (finishing after a variant/candidate click),
+ * so both paths honor an arrival preset typed in the original mention
+ * text the same way.
+ *
+ * `purchased` (built vs kit) and `rawText` (forwarded as
+ * ComposeReplyInput.variantText, which gates `variant-match` literal
+ * blocks — e.g. zudo-rail's Lite renewal notice) both go straight
+ * through to composeReply; see src/reply/compose.ts ComposeReplyInput.
+ */
+export async function composeMatchPayload(
+  env: Env,
+  jobId: number,
+  ref: ProductRef,
+  purchased: "built" | "kit",
+  rawText: string,
+  parsed: Extract<ParsedCommand, { kind: "reply" }>,
+  deps: RunJobDeps,
+): Promise<SlackMessagePayload> {
+  let arrivalSchedule: string | null = null;
+  if (ref.category !== "small") {
+    if (parsed.arrival !== null) {
+      const option = computeArrivalPresetOptions(deps.now).find((candidate) => candidate.preset === parsed.arrival);
+      if (option) {
+        arrivalSchedule = formatArrivalSchedule({ dayLabel: option.dayLabel, month: option.month, day: option.day });
+      }
+    }
+    if (arrivalSchedule === null) {
+      return buildArrivalPickerPayload(jobId, deps.now);
+    }
+  }
+
+  const compose = deps.composeReply ?? defaultComposeReply;
+  const composed = await compose(
+    // `now` forwarded so composeReply's UTC-day budget window agrees
+    // with the rest of this job's clock (src/reply/compose.ts
+    // ComposeReplyDeps.now) — never left to default to a real clock here.
+    { env, fetch: deps.fetch, now: deps.now },
+    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText: rawText },
+  );
+  return buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
+}
+
 /**
  * Builds the Slack payload for a `reply` job from the resolver's result.
- * Only a `small`-category `match` and a `miss` (epic issue #1 decision
- * 7: "a mention that resolves to no reference does not dead-end") are
- * fully composable today — everything else throws a descriptive error;
- * see the module comment on why those gaps are not filled in here.
+ * `miss` (epic issue #1 decision 7: "a mention that resolves to no
+ * reference does not dead-end"), a `small`-category `match`, and a
+ * `general`/`general-diy` `match` that already carries (or is given) an
+ * arrival date all produce the final reply. Everything else — no arrival
+ * date yet, `variant-ambiguous`, `ambiguous` — posts an interactive
+ * quick-pick instead (see the module comment); src/slack/interactions.ts
+ * finishes the job from there.
  */
-function buildReplyJobPayload(resolved: ResolveResult, rawText: string): SlackMessagePayload {
+async function buildReplyJobPayload(
+  env: Env,
+  job: JobRow,
+  resolved: ResolveResult,
+  deps: RunJobDeps,
+): Promise<SlackMessagePayload> {
   if (resolved.kind === "miss") {
     return buildMessagePayload(
-      buildMissingRefBlocks(stripMention(rawText)),
+      buildMissingRefBlocks(stripMention(job.raw_text)),
       "製品リファレンスが見つかりませんでした。",
     );
   }
 
-  if (resolved.kind === "match") {
-    const ref = parseProductRefMarkdown({ slug: resolved.slug, markdown: resolved.ref.body_md });
-    if (ref.category !== "small") {
-      throw new Error(
-        `reply job: "${resolved.slug}" (category "${ref.category}") needs an ` +
-          `arrival-date sentence, which has no source yet (pending issue #14's ` +
-          `interactive picker) — see src/jobs/worker.ts module comment`,
-      );
-    }
-    // TODO(#14): parseCommand supplies real --discord/--direct flags.
-    const flags: ReplyFlags = { direct: false, discord: false };
-    const text = renderDeterministicReply({
-      ref,
-      flags,
-      arrivalSchedule: null,
-      purchased: resolved.variant ?? "built",
-    });
-    return buildReplyMessagePayload({ replyText: text, summaryText: `${ref.displayName} の返信` });
+  const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
+
+  if (parsed.kind === "help") {
+    return buildTextMessagePayload(USAGE_TEXT, "使い方");
+  }
+  if (parsed.kind === "unknown") {
+    return buildTextMessagePayload(`${escapeMrkdwn(parsed.reason)}\n\n${USAGE_TEXT}`, "コマンドを解釈できませんでした。");
+  }
+  if (parsed.kind !== "reply") {
+    // src/slack/events.ts classifyJobKind already routes a text starting
+    // with "ref"/"polish" to job.kind "ref"/"polish" before this function
+    // is ever reached (see composeAndPost's switch below) — a "reply"-kind
+    // job whose own parseCommand disagrees means the two tokenizers have
+    // drifted apart, which is a real bug, not a normal runtime state.
+    throw new Error(
+      `reply job ${job.id}: parseCommand returned "${parsed.kind}" for a job classified as "reply" ` +
+        `— classifyJobKind/parseCommand drift`,
+    );
   }
 
-  // "variant-ambiguous" / "ambiguous": needs an interactive follow-up
-  // (issue #14/#15) this pass cannot provide. Failing loudly here (rather
-  // than guessing built/kit or a candidate) is the same "never guess"
-  // rule src/refs/resolve.ts documents for the resolver itself.
-  throw new Error(
-    `reply job: resolver returned "${resolved.kind}" — needs an interactive ` +
-      `follow-up (pending issue #14/#15)`,
-  );
+  if (resolved.kind === "variant-ambiguous") {
+    const ref = parseProductRefMarkdown({ slug: resolved.slug, markdown: resolved.ref.body_md });
+    return buildVariantPickerPayload(job.id, ref.displayName);
+  }
+  if (resolved.kind === "ambiguous") {
+    return buildCandidatePickerPayload(
+      job.id,
+      resolved.candidates.map((candidate) => candidate.slug),
+    );
+  }
+
+  // resolved.kind === "match"
+  const ref = parseProductRefMarkdown({ slug: resolved.slug, markdown: resolved.ref.body_md });
+  return composeMatchPayload(env, job.id, ref, resolved.variant ?? "built", job.raw_text, parsed, deps);
 }
 
 /**
@@ -151,7 +243,7 @@ async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<
     case "reply": {
       const repoDeps: RepoDeps = { db: env.DB, now: deps.now };
       const resolved = await resolveProductRef(repoDeps, job.raw_text);
-      payload = buildReplyJobPayload(resolved, job.raw_text);
+      payload = await buildReplyJobPayload(env, job, resolved, deps);
       break;
     }
     case "polish":
@@ -315,6 +407,7 @@ export async function runDeliveryPass(deps: RunDeliveryPassDeps): Promise<RunDel
       fetch: deps.fetch,
       now: deps.now,
       sleep: deps.sleep,
+      composeReply: deps.composeReply,
     });
     if (ok) succeeded++;
     else failed++;
