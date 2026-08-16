@@ -29,6 +29,12 @@ export interface Env {
   COMPOSE_PROVIDER: ComposeProviderName;
   AUTHOR_PROVIDER: ComposeProviderName;
   POLISH_PROVIDER: ComposeProviderName;
+  /**
+   * Anthropic model id for the Claude adapter. Blank means "use
+   * src/llm/claude.ts DEFAULT_CLAUDE_MODEL" — this var exists so the
+   * tier can be raised (e.g. to claude-sonnet-5) without a code change.
+   */
+  CLAUDE_MODEL: string;
   SITE_API_BASE: string;
 }
 
