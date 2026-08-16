@@ -11,12 +11,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockD1, type MockD1 } from "../../src/db/test-support";
 import type { Env } from "../../src/env";
-import { COMPOSE_DEADLINE_MS } from "../../src/llm/guards";
 import {
+  computePolishDeadlineMs,
   computePolishMaxTokens,
+  CONTEXT_SAFETY_MARGIN_TOKENS,
   MAX_POLISH_INPUT_CHARS,
+  MODEL_CONTEXT_TOKENS,
+  POLISH_MAX_DEADLINE_MS,
+  POLISH_MIN_DEADLINE_MS,
   POLISH_MIN_MAX_TOKENS,
   polishText,
+  PROMPT_OVERHEAD_TOKENS,
+  TOKENS_PER_CHAR,
   type PolishDeps,
 } from "../../src/reply/polish";
 import type { FetchLike } from "../../src/types";
@@ -230,10 +236,53 @@ describe("the polished path", () => {
     ]);
   });
 
-  it("computes max_tokens as ceil(inputTokens * 2) + 256, floored at 1024", () => {
+  it("floors max_tokens so a short input still gets room", () => {
     expect(computePolishMaxTokens("短い")).toBe(POLISH_MIN_MAX_TOKENS);
-    const long = "あ".repeat(2000);
-    expect(computePolishMaxTokens(long)).toBe(long.length * 2 + 256);
+  });
+
+  /**
+   * The property that matters is not the arithmetic — it is that prompt and
+   * response together fit the model's shared context window. The window is
+   * 24,000 tokens and Cloudflare errors the request when it is exceeded, so
+   * an input at exactly the cap must still leave room for the output it asks
+   * for. The previous formula (`chars * 2 + 256`) failed this at every input
+   * near the old 8,000-character cap, and failed silently: the guard trip
+   * returned the text unchanged, so polish looked like it had run.
+   */
+  it("never requests more than the context window can hold, up to the cap", () => {
+    for (const chars of [1, 100, 1_000, 2_000, MAX_POLISH_INPUT_CHARS - 1, MAX_POLISH_INPUT_CHARS]) {
+      const text = "あ".repeat(chars);
+      const inputTokens = Math.ceil(text.length * TOKENS_PER_CHAR);
+      const total = inputTokens + computePolishMaxTokens(text) + PROMPT_OVERHEAD_TOKENS;
+      expect(total, `${chars} chars overruns the context window`).toBeLessThanOrEqual(MODEL_CONTEXT_TOKENS);
+    }
+  });
+
+  it("derives the input cap from the context window rather than a chosen number", () => {
+    // One character past the cap must not fit, or the cap is not the real boundary.
+    const overCap = "あ".repeat(MAX_POLISH_INPUT_CHARS + 1);
+    const inputTokens = Math.ceil(overCap.length * TOKENS_PER_CHAR);
+    const desired = Math.ceil(inputTokens * 1.5) + 256;
+    expect(inputTokens + desired + PROMPT_OVERHEAD_TOKENS).toBeGreaterThan(
+      MODEL_CONTEXT_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS,
+    );
+  });
+
+  /**
+   * Compose's 8s deadline is sized for a section built from a product
+   * reference (largest in the corpus: 1,309 characters, 2048 max tokens).
+   * Polish asks for many times that output, so sharing the constant would
+   * trip the deadline on all but the shortest input — silently, since a trip
+   * returns the input unchanged.
+   */
+  it("scales the deadline with the output requested, and stays inside its clamps", () => {
+    const short = computePolishDeadlineMs(computePolishMaxTokens("短い"));
+    const long = computePolishDeadlineMs(computePolishMaxTokens("あ".repeat(MAX_POLISH_INPUT_CHARS)));
+
+    expect(short).toBeGreaterThanOrEqual(POLISH_MIN_DEADLINE_MS);
+    expect(long).toBeGreaterThan(short);
+    expect(long).toBeLessThanOrEqual(POLISH_MAX_DEADLINE_MS);
+    expect(short).toBeGreaterThan(8_000);
   });
 
   it("passes max_tokens on every call — Llama truncates silently at 256 without it", async () => {
@@ -342,7 +391,7 @@ describe("every guard trip returns the input unchanged", () => {
     const deps: PolishDeps = { env: createEnv({ DB: db, AI: ai }), fetch: createFakeFetch().fetch };
 
     const pending = polishText(deps, { text: INPUT_TEXT });
-    await vi.advanceTimersByTimeAsync(COMPOSE_DEADLINE_MS);
+    await vi.advanceTimersByTimeAsync(computePolishDeadlineMs(computePolishMaxTokens(INPUT_TEXT)));
     const result = await pending;
 
     expect(result.usedFallback).toBe(true);

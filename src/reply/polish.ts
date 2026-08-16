@@ -32,7 +32,6 @@ import {
   checkBudgetGuard,
   checkOutputGuard,
   classifyCallFailure,
-  COMPOSE_DEADLINE_MS,
   extractUrls,
   withDeadline,
   type ComposeGuard,
@@ -45,11 +44,51 @@ import { errorSnippet, log } from "../ops/log";
 import type { FetchLike, NowFn } from "../types";
 
 /**
- * Beyond this, the input is refused outright rather than truncated or
- * sent anyway -- a half-polished customer message is worse than none
- * (issue #16).
+ * `@cf/meta/llama-3.3-70b-instruct-fp8-fast`'s context window, which the
+ * prompt and the response **share**. Cloudflare's model page is explicit
+ * that exceeding it errors the request rather than truncating, so every
+ * budget below is derived from this number instead of guessed.
  */
-export const MAX_POLISH_INPUT_CHARS = 8_000;
+export const MODEL_CONTEXT_TOKENS = 24_000;
+
+/**
+ * Tokens per character, for Japanese on a Llama tokenizer. Deliberately a
+ * high estimate: over-estimating shrinks the input we accept, while
+ * under-estimating overruns the context window and errors. Same
+ * safe-direction reasoning as {@link computePolishMaxTokens}.
+ */
+export const TOKENS_PER_CHAR = 1.5;
+
+/** Headroom for the system prompt and chat scaffolding around the user text. */
+export const PROMPT_OVERHEAD_TOKENS = 600;
+
+/** Slack for tokenizer variance, so a surprise cannot push a legal input over the window. */
+export const CONTEXT_SAFETY_MARGIN_TOKENS = 1_000;
+
+/**
+ * Polish rewrites the same text more politely, so output length tracks
+ * input length. 1.5x plus a constant is generous for that, not a guess at
+ * an unrelated shape.
+ */
+const OUTPUT_TO_INPUT_RATIO = 1.5;
+const OUTPUT_CONSTANT_TOKENS = 256;
+
+/**
+ * Beyond this, the input is refused outright rather than truncated or sent
+ * anyway -- a half-polished customer message is worse than none (issue #16).
+ *
+ * **Derived, not chosen.** The issue named a flat 8,000 characters, which was
+ * a number with no basis: at 8,000 characters the input alone is ~12,000
+ * tokens and the old `input * 2 + 256` formula asked for another ~16,000, so
+ * the largest input the cap allowed was guaranteed to blow the 24,000-token
+ * window and error -- silently, because a guard trip returns the text
+ * unchanged. The cap is now the largest input for which input + requested
+ * output + overhead still fits, so the two can never drift apart again.
+ */
+export const MAX_POLISH_INPUT_CHARS = Math.floor(
+  (MODEL_CONTEXT_TOKENS - PROMPT_OVERHEAD_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS - OUTPUT_CONSTANT_TOKENS) /
+    (TOKENS_PER_CHAR * (1 + OUTPUT_TO_INPUT_RATIO)),
+);
 
 /** Polish calls per UTC day, counted the same way as COMPOSE_DAILY_CAP (src/llm/guards.ts) but under task "polish", so the two budgets never share a counter. */
 export const DEFAULT_POLISH_DAILY_CAP = 300;
@@ -212,11 +251,14 @@ export function selectPolishProvider(deps: PolishDeps): LlmProvider {
   return createWorkersAiProvider({ ai: deps.env.AI });
 }
 
-/** Same deadline budget as compose (src/llm/guards.ts COMPOSE_DEADLINE_MS) -- the issue names no separate tunable for polish, so none is invented here. */
+/** Deadline scaled to the output actually requested -- see computePolishDeadlineMs for why compose's 8s is wrong here. */
 async function callProvider(provider: LlmProvider, request: Omit<LlmRequest, "signal">): Promise<LlmResult> {
   const controller = new AbortController();
   try {
-    return await withDeadline(provider.run({ ...request, signal: controller.signal }), COMPOSE_DEADLINE_MS);
+    return await withDeadline(
+      provider.run({ ...request, signal: controller.signal }),
+      computePolishDeadlineMs(request.maxTokens),
+    );
   } catch (error) {
     controller.abort();
     throw error;
@@ -292,8 +334,48 @@ const POLISH_SYSTEM_PROMPT = [
 export const POLISH_MIN_MAX_TOKENS = 1024;
 
 export function computePolishMaxTokens(text: string): number {
-  const inputTokens = text.length;
-  return Math.max(POLISH_MIN_MAX_TOKENS, Math.ceil(inputTokens * 2) + 256);
+  const inputTokens = Math.ceil(text.length * TOKENS_PER_CHAR);
+  const desired = Math.ceil(inputTokens * OUTPUT_TO_INPUT_RATIO) + OUTPUT_CONSTANT_TOKENS;
+  // What is actually left in the shared context window once the prompt is in it.
+  const available = MODEL_CONTEXT_TOKENS - inputTokens - PROMPT_OVERHEAD_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS;
+  return Math.max(POLISH_MIN_MAX_TOKENS, Math.min(desired, available));
+}
+
+/**
+ * Tokens per second assumed for the deadline below. A conservative figure
+ * for this model -- fp8-fast is quicker in practice, and under-estimating
+ * only buys slack. **Unmeasured**: #18's smoke test records the real rate
+ * and this should be corrected against it rather than left as a guess.
+ */
+export const ASSUMED_TOKENS_PER_SECOND = 25;
+
+/** Connection, queueing and first-token latency, on top of generation time. */
+const DEADLINE_OVERHEAD_MS = 5_000;
+
+/** Never below this, so a tiny input still tolerates a slow start. */
+export const POLISH_MIN_DEADLINE_MS = 15_000;
+
+/** Never above this: past it, failing fast beats occupying the job for minutes. */
+export const POLISH_MAX_DEADLINE_MS = 120_000;
+
+/**
+ * Polish needs its own deadline; it cannot share compose's.
+ *
+ * `COMPOSE_DEADLINE_MS` is 8s, sized for composing a section out of a
+ * product reference -- the largest reference in the whole corpus is 1,309
+ * characters and `COMPOSE_MAX_TOKENS` is 2048. Polish asks for many times
+ * that output from arbitrary pasted text. Under 8s it would trip before
+ * finishing on all but the shortest input, and because a guard trip
+ * correctly returns the text unchanged, polish would appear to work while
+ * silently doing nothing at all.
+ *
+ * Both callers run in the background (`waitUntil` / the cron sweep), never
+ * in the 3-second Slack ack path, so a longer deadline costs background
+ * latency and nothing else.
+ */
+export function computePolishDeadlineMs(maxTokens: number): number {
+  const generationMs = Math.ceil(maxTokens / ASSUMED_TOKENS_PER_SECOND) * 1_000;
+  return Math.min(POLISH_MAX_DEADLINE_MS, Math.max(POLISH_MIN_DEADLINE_MS, generationMs + DEADLINE_OVERHEAD_MS));
 }
 
 function buildPolishRequest(text: string): Omit<LlmRequest, "signal"> {
