@@ -1,8 +1,10 @@
 /**
  * D1 repositories. Every function takes its D1Database and clock as
  * injected options (CLAUDE.md "Dependency injection at every I/O
- * boundary") so it can be exercised against src/db/test-support.ts's
- * sqlite shim without a Workers runtime.
+ * boundary") so it can be exercised against either test-tier: the
+ * Map-backed `createMockD1` (src/db/test-support.ts) for handler
+ * branching, or the Miniflare-backed `createTestEnv`
+ * (tests/helpers/test-env.ts) for storage-semantics assertions.
  *
  * Implementation is issue #3's responsibility. This file only declares
  * the shapes issue #4 (refs/model.ts), #6 (slack/events.ts) and #10
