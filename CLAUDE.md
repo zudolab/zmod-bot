@@ -37,8 +37,27 @@ Build plan and the full sub-issue breakdown: issue #1.
 ## Conventions
 
 - **Dependency injection at every I/O boundary** — `fetch`, `sleep`, `now`, and the `waitUntil`
-  scheduler are injected options. This is what lets the whole system be tested without a Workers
-  runtime; there is no Miniflare and no Playwright in this repo.
+  scheduler are injected options. This is what lets handler logic be tested without a Workers
+  runtime. There is no Playwright and no browser tooling anywhere in this repo.
+- **Two test tiers, chosen by what is under test** — the rule is *test YOUR logic, not the
+  platform's storage engine* (`/test-wisdom` → `project-recipes/backend-testing.mdx`):
+  - **`createMockD1()`** (`src/db/test-support.ts`) — a `Map`-backed stub implementing only the
+    `D1Database` methods a test needs. For handler branching and threading. Fast, plain Node.
+  - **`createTestEnv()`** (`src/db/test-support.ts`) — a **Miniflare**-backed real D1 binding with
+    `migrations/` applied. For **storage semantics**: `ON CONFLICT DO NOTHING` reporting
+    `meta.changes === 0`, `db.batch()` atomicity, the claim-token fenced `UPDATE` matching zero rows.
+
+  Do **not** hand-roll a sqlite D1 shim. This project's critical assertions *are* those D1
+  semantics, and a shim reproducing `meta.changes` by hand can drift from real D1 — leaving the
+  tests agreeing with themselves while production breaks.
+- **`exec()` splits on NEWLINES, not semicolons.** A pretty-printed multi-statement migration passed
+  straight to D1's `exec()` throws `D1_EXEC_ERROR: incomplete input`. Split on `;`, collapse each
+  statement to one line, `exec()` one at a time. Safe here because all 34 seed reference bodies
+  contain zero semicolons — verified; keep it that way.
+- **Pin crypto and absence assertions to something outside the code under test.** A sign-then-verify
+  round trip passes even when the base string is built wrong, and an absence assertion can be tripped
+  by its own fixture. Use independently-computed known-answer vectors (see #6), and grep
+  `data/seed/products/` for any new absence token before shipping the assertion.
 - **Read `result.meta.changes` on every conditional D1 write.** `success: true` with `changes: 0` is
   how a lost race presents, and it is not an error. Only use `SELECT changes()` inside a `db.batch()`.
 - Package manager: **pnpm**. Tests: **vitest**. `pnpm typecheck && pnpm test` must pass before any PR.

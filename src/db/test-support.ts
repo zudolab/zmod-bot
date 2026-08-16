@@ -1,26 +1,36 @@
 /**
- * Sqlite-backed D1 shim for tests — real SQL against a temp database,
- * migrated with the files in `migrations/`, rather than a mocked D1
- * client. See CLAUDE.md "Conventions": there is no Miniflare in this
- * repo, so this is how src/db/repos.ts gets exercised against the real
- * schema. Modeled on readycrew-viewer's
- * `app/src/db/sqlite-d1.test-support.ts` (same D1Result.meta /
- * batch()-interleaving concerns apply once implemented).
+ * Test harness for the D1 layer — two tiers, chosen by what is under test.
  *
- * Node-only (it will invoke a local `sqlite3` binary) and never imported
- * from src/index.ts's production graph, so wrangler's esbuild bundle
- * never pulls it in — no separate exclude config needed.
+ * The load-bearing principle (see /test-wisdom
+ * `project-recipes/backend-testing.mdx`): **test YOUR logic, not the
+ * platform's storage engine.**
  *
- * Implementation is issue #3's responsibility, alongside migrations/.
+ *   createMockD1()   (this file) — Map-backed stub implementing only the
+ *                    D1Database methods under test. Use it when the
+ *                    assertion is about handler branching and threading —
+ *                    does this route read the binding it should, does the
+ *                    ingress filter reject the right events. Fast, plain
+ *                    Node, pre-seedable, and it asserts nothing about SQL.
+ *
+ *   createTestEnv()  (tests/helpers/test-env.ts) — Miniflare-backed REAL
+ *                    D1 binding, with the files in migrations/ applied.
+ *                    Use it whenever the assertion is about storage
+ *                    semantics: `ON CONFLICT DO NOTHING` reporting
+ *                    `meta.changes === 0`, `db.batch()` atomicity, the
+ *                    claim-token fenced `UPDATE` matching zero rows.
+ *
+ * Why Miniflare rather than a hand-rolled sqlite shim: this project's
+ * critical assertions ARE those D1 semantics, and a shim that reproduces
+ * `meta.changes` by hand can drift from real D1 — in which case the tests
+ * agree with themselves while production breaks.
+ *
+ * Not reachable from src/index.ts's production import graph, so
+ * wrangler's esbuild bundle never pulls this in.
+ *
+ * Implementation is issue #3's responsibility.
  */
 
-export interface TestDbHandle {
-  db: D1Database;
-  /** Deletes the temp sqlite file backing this handle. */
-  close(): void;
-}
-
-/** Applies every migration in migrations/ against a fresh temp sqlite database and returns a D1Database-shaped handle. */
-export function createTestDb(): TestDbHandle {
-  throw new Error("not implemented: createTestDb");
+/** Map-backed D1 stub for handler-branching tests. Implements only what a test needs. */
+export function createMockD1(): D1Database {
+  throw new Error("not implemented: createMockD1");
 }
