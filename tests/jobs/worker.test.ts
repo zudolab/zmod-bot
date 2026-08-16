@@ -73,6 +73,7 @@ describe("delivery worker (issue #10)", () => {
       COMPOSE_PROVIDER: "workers-ai",
       AUTHOR_PROVIDER: "claude",
       POLISH_PROVIDER: "workers-ai",
+    CLAUDE_MODEL: "",
       SITE_API_BASE: "https://takazudomodular.com/api",
     };
   }
