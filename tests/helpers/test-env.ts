@@ -33,8 +33,21 @@
 import { Miniflare } from "miniflare";
 import migration0001 from "../../migrations/0001_init.sql?raw";
 
-/** Every migration file's SQL text, applied in order. Add to this array as new migrations land (e.g. a future seed migration). */
+/** Every always-applied migration file's SQL text, in order. Add to this array once a migration is meant for every test (see the `migrations` option below for one that isn't). */
 const MIGRATIONS: string[] = [migration0001];
+
+export interface CreateTestEnvOptions {
+  /**
+   * Extra migration SQL text, applied in order after {@link MIGRATIONS}.
+   * Opt-in rather than appended to the base array so existing tests that
+   * assume a bare 0001 schema (e.g. tests/db/repos.test.ts inserting its
+   * own `oxi-one` / `wingie2` fixture rows, which would collide with the
+   * seed migration's rows of the same slug) are unaffected. Pass the seed
+   * migration here (`migrations/0002_seed_product_refs.sql?raw`) from a
+   * test that specifically wants the seeded corpus loaded.
+   */
+  migrations?: string[];
+}
 
 export interface TestEnvHandle {
   db: D1Database;
@@ -46,12 +59,12 @@ export interface TestEnvHandle {
  * `new Miniflare({ modules: true, script: "", d1Databases: ["DB"] })`
  * with migrations/*.sql applied — see the gotcha above.
  */
-export async function createTestEnv(): Promise<TestEnvHandle> {
+export async function createTestEnv(options: CreateTestEnvOptions = {}): Promise<TestEnvHandle> {
   const mf = new Miniflare({ modules: true, script: "", d1Databases: ["DB"] });
   const bindings = await mf.getBindings();
   const db = bindings.DB as D1Database;
 
-  for (const sql of MIGRATIONS) {
+  for (const sql of [...MIGRATIONS, ...(options.migrations ?? [])]) {
     for (const statement of sql
       .split(";")
       .map((s) => s.replace(/\s+/g, " ").trim())
