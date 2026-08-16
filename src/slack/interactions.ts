@@ -48,16 +48,15 @@ import {
   type SlackMessagePayload,
 } from "./blocks";
 import {
-  consumeRefDraft,
   getJobById,
   getProductRefBySlug,
   recordInteractionReceipt,
-  upsertProductRef,
   type RepoDeps,
 } from "../db/repos";
 import type { ProductRefRow } from "../db/schema";
 import { resolveProductRef } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
+import { approveRefDraft, describeRefDraftOutcome, rejectRefDraft } from "../refs/commands";
 import { openView, postEphemeral, postToResponseUrl, updateMessage, type SlackApiDeps } from "./api";
 import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
 import { formatArrivalSchedule } from "../reply/templates";
@@ -362,32 +361,50 @@ async function updateOriginalMessage(
  * ref_approve / ref_reject.
  * ---------------------------------------------------------------------- */
 
+/**
+ * Approve or reject a pending reference edit.
+ *
+ * **A refusal writes nothing — not even `consumed_at`.** The four ways
+ * an approval can be refused (draft gone/expired, `base_version` no
+ * longer current, body no longer parses, an alias owned by another
+ * product) all leave the draft intact so the operator can fix the cause
+ * and click the same button again. Only a reject, or a successful
+ * commit, consumes it — and the commit consumes it *inside the same
+ * `db.batch()`* that does the write, so the two can never disagree.
+ *
+ * Refusals go out as an ephemeral to the clicker, leaving the preview in
+ * place; a decision (approved / rejected) replaces the preview message,
+ * so its buttons stop being clickable-looking once they no longer mean
+ * anything. Both are best-effort chrome around a write that has already
+ * happened-or-not in D1 — never the record of it.
+ *
+ * The admin gate runs at the call site (see handleBlockActions), on the
+ * click rather than at render time.
+ */
 async function handleRefDraftDecision(
   repoDeps: RepoDeps,
   slackApiDeps: SlackApiDeps,
   ctx: { draftId: string; approve: boolean; actorUserId: string; channelId: string; messageTs: string },
 ): Promise<void> {
   if (!ctx.draftId) return;
-  const draft = await consumeRefDraft(repoDeps, ctx.draftId);
-  if (!draft) {
-    await tryUpdate(slackApiDeps, ctx, buildTextPayload("この変更は既に処理済みか、期限切れです。"));
-    return;
-  }
 
   if (!ctx.approve) {
-    await tryUpdate(slackApiDeps, ctx, buildTextPayload(`「${draft.slug}」の変更をキャンセルしました。`));
+    const rejected = await rejectRefDraft(repoDeps, ctx.draftId);
+    if (!rejected) {
+      await tryEphemeral(slackApiDeps, ctx, describeRefDraftOutcome({ kind: "gone" }));
+      return;
+    }
+    await tryUpdate(slackApiDeps, ctx, buildTextPayload(`「${rejected.slug}」の変更をキャンセルしました。`));
     return;
   }
 
-  await upsertProductRef(repoDeps, {
-    slug: draft.slug,
-    category: draft.category,
-    productUrl: draft.product_url,
-    bodyMd: draft.body_md,
-    changedByUserId: ctx.actorUserId,
-    source: draft.base_version === null ? "authored" : "refreshed",
-  });
-  await tryUpdate(slackApiDeps, ctx, buildTextPayload(`「${draft.slug}」を承認し反映しました。`));
+  const outcome = await approveRefDraft(repoDeps, ctx.draftId, ctx.actorUserId);
+  const message = describeRefDraftOutcome(outcome);
+  if (outcome.kind === "committed") {
+    await tryUpdate(slackApiDeps, ctx, buildTextPayload(message));
+    return;
+  }
+  await tryEphemeral(slackApiDeps, ctx, message);
 }
 
 async function tryUpdate(
@@ -397,6 +414,16 @@ async function tryUpdate(
 ): Promise<void> {
   if (!ctx.channelId || !ctx.messageTs) return;
   await updateMessage(slackApiDeps, { channel: ctx.channelId, ts: ctx.messageTs, payload });
+}
+
+/** Refusal feedback for the clicker only, leaving the preview message untouched so the same button can be clicked again once the cause is fixed. */
+async function tryEphemeral(
+  slackApiDeps: SlackApiDeps,
+  ctx: { channelId: string; actorUserId: string },
+  text: string,
+): Promise<void> {
+  if (!ctx.channelId) return;
+  await postEphemeral(slackApiDeps, { channel: ctx.channelId, user: ctx.actorUserId, payload: buildTextPayload(text) });
 }
 
 /* -------------------------------------------------------------------------

@@ -32,9 +32,18 @@
  */
 import { Miniflare } from "miniflare";
 import migration0001 from "../../migrations/0001_init.sql?raw";
+import migration0003 from "../../migrations/0003_ref_drafts_source.sql?raw";
 
-/** Every always-applied migration file's SQL text, in order. Add to this array once a migration is meant for every test (see the `migrations` option below for one that isn't). */
-const MIGRATIONS: string[] = [migration0001];
+/**
+ * Every always-applied migration file's SQL text, in order. Add to this
+ * array once a migration is meant for every test (see the `migrations`
+ * option below for one that isn't).
+ *
+ * 0002 (the seed corpus) is deliberately absent — it is the opt-in one.
+ * 0003 only ALTERs a table 0001 creates, so applying it before an opt-in
+ * 0002 is equivalent to production's strict filename order.
+ */
+const MIGRATIONS: string[] = [migration0001, migration0003];
 
 export interface CreateTestEnvOptions {
   /**
