@@ -127,9 +127,12 @@ describe("the miss reply's section text stays under Slack's 3000-char cap", () =
     const text = missingRefSectionText(query);
 
     expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
-    // A corpus name is nowhere near the cap, so it must survive verbatim.
-    expect(text).toContain(query);
-    expect(text).not.toContain("…");
+    // A corpus name is nowhere near the cap, so it must survive verbatim —
+    // compared against the escaped form (like the oversized case below) so a
+    // name that later gains an `&`/`<`/`>` does not turn this into a false
+    // failure. Full equality also covers "no truncation marker was added"
+    // without assuming no corpus name ever contains a literal "…".
+    expect(text).toBe(`「${escapeMrkdwn(query)}」に一致する製品リファレンスが見つかりませんでした。`);
   });
 
   /**
