@@ -23,6 +23,8 @@ import {
 import type { JobRow } from "../db/schema";
 import { createTestEnv, type TestEnvHandle } from "../../tests/helpers/test-env";
 import type { Env } from "../env";
+import type { ProductRefVersionRow } from "../db/schema";
+import { MAX_CHARS_PER_SECTION_TEXT } from "../slack/blocks";
 import { REF_CATEGORY_LABELS } from "./model";
 import { parseProductRefMarkdown } from "./parse";
 import { normalizeAlias, resolveProductRef } from "./resolve";
@@ -31,6 +33,8 @@ import {
   REF_DRAFT_TTL_MS,
   approveRefDraft,
   buildRefCommandPayload,
+  buildRefHistoryPayload,
+  buildRefShowPayload,
   byteSize,
   formatJstTimestamp,
   productRefAliasNorms,
@@ -567,5 +571,65 @@ describe("ref commands", () => {
   it("productRefAliasNorms registers the H1 alongside the declared aliases, deduped", async () => {
     const ref = parseProductRefMarkdown({ slug: SLUG, markdown: BODY_V1 });
     expect(productRefAliasNorms(ref).sort()).toEqual([normalizeAlias("test widget"), normalizeAlias("widget alpha")].sort());
+  });
+});
+
+/**
+ * Issue #33. These builders interpolate text nothing upstream bounds — a
+ * stored reference body, an operator-supplied slug — into a `section`.
+ * Slack rejects an oversized text object with `invalid_blocks` and drops
+ * the *whole* message, so the operator gets no reply at all rather than a
+ * long one. The bound lives in mrkdwnSection; these pin that every
+ * builder on this path actually goes through it.
+ */
+describe("ref command replies stay inside Slack's section-text cap", () => {
+  const sectionTexts = (blocks: unknown[]): string[] =>
+    blocks
+      .filter((block): block is { type: string; text: { text: string } } => (block as { type?: string }).type === "section")
+      .map((block) => block.text.text);
+
+  function version(overrides: Partial<ProductRefVersionRow> = {}): ProductRefVersionRow {
+    return {
+      id: 1,
+      slug: "test-widget",
+      version: 1,
+      body_md: "# Test Widget\n",
+      category: "general",
+      product_url: null,
+      created_at: NOW_MS,
+      created_by: ADMIN,
+      source: "authored",
+      ...overrides,
+    };
+  }
+
+  it("bounds `ref history` when the stored bodies are enormous", () => {
+    // firstLine() of each body lands in the section, once per listed version.
+    const versions = Array.from({ length: 20 }, (_, index) =>
+      version({ id: index + 1, version: 20 - index, body_md: `# ${"長".repeat(5_000)}\n` }),
+    );
+
+    const texts = sectionTexts(buildRefHistoryPayload("test-widget", versions).blocks);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+  });
+
+  it("bounds `ref show`'s header for an absurd slug", () => {
+    const texts = sectionTexts(
+      buildRefShowPayload({
+        slug: "q".repeat(10_000),
+        category: "general",
+        product_url: null,
+        body_md: "# Test Widget\n",
+        version: 3,
+        updated_at: NOW_MS,
+        updated_by: ADMIN,
+      }).blocks,
+    );
+
+    for (const text of texts) {
+      expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    }
   });
 });

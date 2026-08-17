@@ -121,6 +121,67 @@ export function buildReplyMessagePayload(input: BuildReplyMessagePayloadInput): 
   return buildMessagePayload(buildReplyBlocks(input.replyText), input.summaryText);
 }
 
+/** Marker appended to any text this module had to shorten to fit a block's ceiling. */
+const TRUNCATION_MARKER = "…";
+
+/** The longest escape `escapeMrkdwn` emits, `&amp;`. An entity split by a cut must therefore start within the last four characters. */
+const LONGEST_MRKDWN_ENTITY = 5;
+
+/**
+ * Drops a trailing `&…` whose `;` was lost to a cut. Half of an escape
+ * renders as the literal text `&am` rather than the character it stood
+ * for. Only a `&` near the very end is treated as a casualty of the cut —
+ * a bare `&` further back belongs to the text and is left alone.
+ */
+function trimDanglingEntity(text: string): string {
+  const lastAmpersand = text.lastIndexOf("&");
+  // No ampersand at all, or one further back than the longest escape
+  // could reach: only the cut can dangle an entity, and a dangling one
+  // must start within the final few characters.
+  if (lastAmpersand === -1 || lastAmpersand < text.length - (LONGEST_MRKDWN_ENTITY - 1)) return text;
+  return text.includes(";", lastAmpersand) ? text : text.slice(0, lastAmpersand);
+}
+
+/**
+ * Bounds an **already-rendered** mrkdwn string to
+ * MAX_CHARS_PER_SECTION_TEXT (issue #33).
+ *
+ * This is the backstop, not the precise tool. Slack rejects an oversized
+ * text object with `invalid_blocks` and drops the entire message, so any
+ * builder whose text can grow with operator input, a stored reference
+ * body or an error string needs *something* here — but a whole-string cut
+ * takes the tail off, which for a sentence means losing its ending. Where
+ * a builder knows which part of its text is the unbounded one, it should
+ * bound that part first (see fitMissingRefSectionText) and let this only
+ * ever be a no-op.
+ *
+ * Unlike fitMissingRefSectionText this takes text that has *already* been
+ * through escapeMrkdwn, so it must not re-escape and must not cut an
+ * escape in half. Iteration is by code point so no cut lands between the
+ * halves of an astral character.
+ */
+export function fitSectionText(text: string): string {
+  if (text.length <= MAX_CHARS_PER_SECTION_TEXT) return text;
+
+  const budget = MAX_CHARS_PER_SECTION_TEXT - TRUNCATION_MARKER.length;
+  let kept = "";
+  for (const character of text) {
+    if (kept.length + character.length > budget) break;
+    kept += character;
+  }
+  return trimDanglingEntity(kept) + TRUNCATION_MARKER;
+}
+
+/** A `section` block carrying mrkdwn `text`, bounded to what Slack will accept. Every mrkdwn section should be built through this rather than by hand, so no builder can forget the ceiling. */
+export function mrkdwnSection(blockId: string, text: string): unknown {
+  return { type: "section", block_id: blockId, text: { type: "mrkdwn", text: fitSectionText(text) } };
+}
+
+/** A `context` block carrying one mrkdwn element, bounded the same way. */
+export function mrkdwnContextBlock(blockId: string, text: string): unknown {
+  return { type: "context", block_id: blockId, elements: [{ type: "mrkdwn", text: fitSectionText(text) }] };
+}
+
 /** One `plain_text` Block Kit button. */
 function plainTextButton(input: {
   actionId: string;
@@ -190,9 +251,6 @@ export function buildApprovalBlocks(input: ApprovalButtonsInput): unknown[] {
 /** Interaction-payload action_id for the "create a reference" button built by buildMissingRefBlocks. */
 export const CREATE_REFERENCE_ACTION_ID = "create_reference";
 
-/** Appended to a query the miss reply had to shorten, so the reader can tell the text was cut rather than typed that way. */
-const MISSING_REF_TRUNCATION_MARKER = "…";
-
 /**
  * The miss reply's section text for an already-fitted `query`. Escaping
  * happens here rather than at the call site because the budget below has
@@ -233,7 +291,7 @@ function fitMissingRefSectionText(query: string): string {
   if (full.length <= MAX_CHARS_PER_SECTION_TEXT) return full;
 
   // What is left for the query once the fixed chrome and the marker are paid for.
-  const budget = MAX_CHARS_PER_SECTION_TEXT - missingRefSectionText(MISSING_REF_TRUNCATION_MARKER).length;
+  const budget = MAX_CHARS_PER_SECTION_TEXT - missingRefSectionText(TRUNCATION_MARKER).length;
   let kept = "";
   let spent = 0;
   for (const character of query) {
@@ -242,7 +300,7 @@ function fitMissingRefSectionText(query: string): string {
     kept += character;
     spent += cost;
   }
-  return missingRefSectionText(kept + MISSING_REF_TRUNCATION_MARKER);
+  return missingRefSectionText(kept + TRUNCATION_MARKER);
 }
 
 /**
@@ -268,14 +326,12 @@ function fitMissingRefSectionText(query: string): string {
  */
 export function buildMissingRefBlocks(query: string, buttonValue: string): unknown[] {
   return [
-    {
-      type: "section",
-      block_id: "missing_ref_message",
-      text: {
-        type: "mrkdwn",
-        text: fitMissingRefSectionText(query),
-      },
-    },
+    // The query is fitted *before* the generic bound, not instead of it:
+    // fitSectionText would cut the sentence's ending off, where
+    // fitMissingRefSectionText cuts the query and leaves the sentence
+    // whole. Going through mrkdwnSection anyway keeps every section in
+    // this file on one builder.
+    mrkdwnSection("missing_ref_message", fitMissingRefSectionText(query)),
     {
       type: "actions",
       block_id: "missing_ref_actions",

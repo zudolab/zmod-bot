@@ -52,6 +52,8 @@ import {
   buildMessagePayload,
   buildReplyBlocks,
   escapeMrkdwn,
+  mrkdwnContextBlock,
+  mrkdwnSection,
   type SlackMessagePayload,
 } from "../slack/blocks";
 import { ACTION_IDS, encodeButtonValue, isAdminUser, parseCommand, USAGE_TEXT } from "../slack/commands";
@@ -127,12 +129,22 @@ export function productRefAliasNorms(ref: ProductRef): string[] {
   return [...new Set([...ref.aliases, ref.displayName].map(normalizeAlias))].filter((alias) => alias !== "");
 }
 
+/**
+ * Every plain bot reply on the `ref` command path. The section is built
+ * through mrkdwnSection so the bound applies once here rather than at each
+ * of the callers that interpolate operator input, an error message or a
+ * stored reference body into it — an oversized text object is rejected
+ * with `invalid_blocks`, which drops the whole message (issue #33).
+ *
+ * `summaryText` needs no bound: it becomes the top-level `text`, whose
+ * ceiling is ~40,000 characters.
+ */
 function textPayload(text: string, summaryText = text): SlackMessagePayload {
-  return buildMessagePayload([{ type: "section", block_id: "bot_text", text: { type: "mrkdwn", text } }], summaryText);
+  return buildMessagePayload([mrkdwnSection("bot_text", text)], summaryText);
 }
 
 function contextBlock(blockId: string, text: string): unknown {
-  return { type: "context", block_id: blockId, elements: [{ type: "mrkdwn", text }] };
+  return mrkdwnContextBlock(blockId, text);
 }
 
 /**
@@ -203,11 +215,7 @@ function targetProblemPayload(target: string, result: Exclude<RefTargetResult, {
  * ---------------------------------------------------------------------- */
 
 export function buildRefShowPayload(ref: ProductRefRow): SlackMessagePayload {
-  const header = {
-    type: "section",
-    block_id: "ref_show_header",
-    text: { type: "mrkdwn", text: `*${escapeMrkdwn(ref.slug)}* のリファレンス（v${ref.version}）` },
-  };
+  const header = mrkdwnSection("ref_show_header", `*${escapeMrkdwn(ref.slug)}* のリファレンス（v${ref.version}）`);
   const { blocks, truncated } = bodyBlocks(ref.body_md, 3);
   const context = contextBlock(
     "ref_show_context",
@@ -255,14 +263,10 @@ export function buildRefHistoryPayload(slug: string, versions: readonly ProductR
 
   return buildMessagePayload(
     [
-      {
-        type: "section",
-        block_id: "ref_history",
-        text: {
-          type: "mrkdwn",
-          text: `*${escapeMrkdwn(slug)}* の変更履歴（新しい順）\n\n${lines.join("\n")}${more}${restoreHint}`,
-        },
-      },
+      mrkdwnSection(
+        "ref_history",
+        `*${escapeMrkdwn(slug)}* の変更履歴（新しい順）\n\n${lines.join("\n")}${more}${restoreHint}`,
+      ),
     ],
     `${slug} の変更履歴`,
   );
@@ -296,11 +300,7 @@ export interface RefDraftPreviewInput {
  * #14's report; issue #15 comment).
  */
 export function buildRefDraftPreviewPayload(input: RefDraftPreviewInput): SlackMessagePayload {
-  const header = {
-    type: "section",
-    block_id: "ref_draft_header",
-    text: { type: "mrkdwn", text: `*${escapeMrkdwn(input.slug)}*\n${input.headline}` },
-  };
+  const header = mrkdwnSection("ref_draft_header", `*${escapeMrkdwn(input.slug)}*\n${input.headline}`);
   const { blocks, truncated } = bodyBlocks(input.bodyMd, 4);
   const actions = buildConfirmCancelBlocks({
     blockId: "ref_draft_actions",
