@@ -56,10 +56,11 @@ import {
   type RepoDeps,
 } from "../db/repos";
 import type { ProductRefRow } from "../db/schema";
+import { buildAuthoredRefPayload } from "../refs/commands";
 import { resolveProductRef } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
 import { approveRefDraft, describeRefDraftOutcome, rejectRefDraft } from "../refs/commands";
-import { openView, postEphemeral, postToResponseUrl, updateMessage, type SlackApiDeps } from "./api";
+import { openView, postEphemeral, postMessage, postToResponseUrl, updateMessage, type SlackApiDeps } from "./api";
 import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
 import { formatArrivalSchedule } from "../reply/templates";
 import { log } from "../ops/log";
@@ -248,16 +249,37 @@ async function handleBlockActions(
   }
 
   if (click.actionId === CREATE_REFERENCE_ACTION_ID) {
-    // The actual authoring pipeline (LLM-drafted new reference content,
-    // src/env.ts AUTHOR_PROVIDER) is issue #16's responsibility and
-    // doesn't exist yet — acknowledge honestly rather than pretending
-    // this button already does something it can't.
+    // The implicit authoring path (issue #17): a mention that resolved to
+    // no reference offered this button, and clicking it drafts one. The
+    // button carries the original search query as a plain string value,
+    // not the id envelope (src/slack/blocks.ts buildMissingRefBlocks).
+    //
+    // Authoring fetches several pages and calls the stronger model, so it
+    // can run for tens of seconds. The interim ephemeral exists because a
+    // button that sits silent that long reads as broken, and the operator
+    // clicks it again — which the receipt above would then swallow as a
+    // duplicate, leaving them with nothing at all.
+    const query = click.value;
     deps.waitUntil(
-      postEphemeral(slackApiDeps, {
-        channel: click.channelId,
-        user: click.userId,
-        payload: buildTextPayload("リファレンスの新規作成はまだ実装されていません（issue #16 待ち）。"),
-      }).catch((error) => log("error", "interactions: create_reference ack failed", { error: errorText(error) })),
+      (async () => {
+        await postEphemeral(slackApiDeps, {
+          channel: click.channelId,
+          user: click.userId,
+          payload: buildTextPayload(`「${query}」のリファレンスを作成しています。少しお待ちください。`),
+        });
+        const payload = await buildAuthoredRefPayload(
+          env,
+          repoDeps,
+          { mode: "new", query },
+          click.userId,
+          { fetch: deps.fetch },
+        );
+        await postMessage(slackApiDeps, {
+          channel: click.channelId,
+          threadTs: click.messageTs,
+          payload,
+        });
+      })().catch((error) => log("error", "interactions: create_reference authoring failed", { error: errorText(error) })),
     );
     return ack();
   }

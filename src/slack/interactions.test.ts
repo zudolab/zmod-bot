@@ -560,4 +560,51 @@ describe("handleSlackInteractionsWithDeps -- against real D1", () => {
     const ephemeralCalls = calls.filter((call) => call.url.endsWith("/chat.postEphemeral"));
     expect(ephemeralCalls).toHaveLength(1);
   });
+
+  /**
+   * The implicit authoring path (issue #17): a mention that resolves to no
+   * reference offers this button, and clicking it drafts one. Until #17 was
+   * wired the handler answered with a "not implemented" ephemeral, and
+   * nothing asserted that — so the button could have stayed dark
+   * indefinitely without a single test going red.
+   *
+   * The fake fetch cannot satisfy the authoring provider, so the pipeline
+   * trips a guard and reports the failure. That is the correct behaviour for
+   * this path (authoring never falls back — an invented reference is worse
+   * than none), and it still proves the wiring: the interim notice goes out
+   * and the outcome is posted in-thread.
+   */
+  it("an admin clicking create_reference runs the authoring pipeline and reports in-thread", async () => {
+    await setup();
+    const body = formEncodedPayload(
+      blockActionsPayload({ actionId: CREATE_REFERENCE_ACTION_ID, value: "some new product", userId: "U_ADMIN" }),
+    );
+    const request = await makeSignedRequest(body);
+    const { fetch, calls } = createFakeFetch();
+    const { waitUntil, scheduled } = makeWaitUntil();
+
+    // baseEnv() casts `as Env`, so vars it omits are undefined at runtime
+    // with no type error — the authoring pipeline needs these three.
+    const authoringEnv: Env = {
+      ...fakeEnv,
+      SITE_API_BASE: "https://site.test",
+      AUTHOR_PROVIDER: "claude",
+      ANTHROPIC_API_KEY: "test-key",
+    };
+    const response = await handleSlackInteractionsWithDeps(request, authoringEnv, makeDeps({ db: env!.db, waitUntil, fetch }));
+    expect(response.status).toBe(200);
+    await Promise.all(scheduled);
+
+    // The interim "working on it" notice — a button that sits silent for
+    // tens of seconds reads as broken and gets clicked again.
+    const ephemeralCalls = calls.filter((call) => call.url.endsWith("/chat.postEphemeral"));
+    expect(ephemeralCalls).toHaveLength(1);
+
+    // The outcome, in the thread the button was posted in.
+    const postCalls = calls.filter((call) => call.url.endsWith("/chat.postMessage"));
+    expect(postCalls).toHaveLength(1);
+
+    const everything = JSON.stringify(calls.map((call) => call.body));
+    expect(everything, "the placeholder must be gone, not merely unreferenced").not.toContain("まだ実装されていません");
+  });
 });
