@@ -24,6 +24,7 @@ import { normalizeAlias } from "../../src/refs/resolve";
 import { ACTION_IDS, NO_PRODUCT_QUERY_REASON, USAGE_TEXT } from "../../src/slack/commands";
 import { CREATE_REFERENCE_ACTION_ID } from "../../src/slack/blocks";
 import type { ComposeReplyInput } from "../../src/reply/compose";
+import { renderDeterministicReply } from "../../src/reply/render";
 import type { FetchLike, SleepFn } from "../../src/types";
 import { createTestEnv, type TestEnvHandle } from "../helpers/test-env";
 
@@ -49,7 +50,20 @@ function createFakeComposeReply(): { composeReply: ComposeReplyFn; calls: Compos
   const calls: ComposeReplyInput[] = [];
   const composeReply: ComposeReplyFn = async (_deps, input) => {
     calls.push(input);
-    return { text: `[fake composed reply for ${input.ref.slug}]`, usedFallback: false };
+    // The deterministic renderer, not a placeholder: `variant-match`
+    // literal blocks are gated inside it (src/reply/render.ts
+    // includesLiteralBlock), so a test that only inspected the *inputs*
+    // could not tell a dropped notice from a delivered one.
+    return {
+      text: renderDeterministicReply({
+        ref: input.ref,
+        flags: { direct: input.direct, discord: input.discord },
+        arrivalSchedule: input.arrivalSchedule,
+        ...(input.purchased === undefined ? {} : { purchased: input.purchased }),
+        ...(input.variantText === undefined ? {} : { variantText: input.variantText }),
+      }),
+      usedFallback: false,
+    };
   };
   return { composeReply, calls };
 }
@@ -87,12 +101,12 @@ describe("thread inheritance (issue #27)", () => {
     };
   }
 
-  async function seedProduct(slug: string, category: ProductCategory, alias: string) {
+  async function seedProduct(slug: string, category: ProductCategory, alias: string, bodyMd?: string) {
     await upsertProductRef(deps, {
       slug,
       category,
       productUrl: `https://takazudomodular.com/products/${slug}/`,
-      bodyMd: `# ${slug}\n\n- category: ${category}\n- aliases: ${alias}\n\n## Notes\n\nfixture\n`,
+      bodyMd: bodyMd ?? `# ${slug}\n\n- category: ${category}\n- aliases: ${alias}\n\n## Notes\n\nfixture\n`,
       aliases: [alias].map(normalizeAlias),
       changedByUserId: "seed",
       source: "seed",
@@ -166,6 +180,7 @@ describe("thread inheritance (issue #27)", () => {
       slug: "diy-widget",
       variant: "kit",
       arrivalSchedule: expect.stringContaining("到着予定になります。"),
+      variantText: "<@U0BOT1> diy widget kit 明後日",
     });
   });
 
@@ -183,6 +198,7 @@ describe("thread inheritance (issue #27)", () => {
       slug: "general-widget",
       variant: null,
       arrivalSchedule: null,
+      variantText: "<@U0BOT1> general widget",
     });
   });
 
@@ -221,6 +237,91 @@ describe("thread inheritance (issue #27)", () => {
     expect(third.composeCalls[0]?.direct).toBe(true);
     expect(third.composeCalls[0]?.discord).toBe(false); // NOT carried over from turn 2
     expect(third.composeCalls[0]?.arrivalSchedule).toBe(arrival);
+  });
+
+  /**
+   * Regression (epic #22 cross-wave seam): `variant-match` literal blocks
+   * are byte-exact customer-facing business text — the operator pastes the
+   * reply into Mercari Shops verbatim — and they are gated by the text
+   * that named the purchased variant. Inheritance originally re-read that
+   * text from the *immediately prior* turn's `raw_text`, which on turn 3
+   * of a chain is itself modifier-only (`@bot --discord`) and carries no
+   * needle, so the notice silently vanished from turn 3 onward with no
+   * error anywhere. Fixed by carrying the naming turn's text forward in
+   * ResolvedJobContext.variantText.
+   */
+  it("a variant-match literal block still ships on turn 3 of product -> --discord -> --direct", async () => {
+    await setup();
+    const notice = "（Lite版レールのリニューアルについてのご案内）";
+    await seedProduct(
+      "rail-widget",
+      "small",
+      "rail widget",
+      [
+        "# rail-widget",
+        "",
+        "- category: small",
+        "- aliases: rail widget",
+        "",
+        "## Assembly Guide",
+        "",
+        "- rail-widget 組み立て方法: https://takazudomodular.com/guides/how-to-build-rail-widget/",
+        "",
+        "Intro text: 組み立てにつきましては、以下をご参考にお願い致します。",
+        "",
+        "## Lite Version Renewal Notice",
+        "",
+        "When the purchased product is a **Lite** variant, ALWAYS append the following notice after the assembly guide section.",
+        "",
+        "```",
+        notice,
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    // Turn 1 names the variant — "lite" is the needle, and this is the
+    // only turn in the chain whose own text contains it.
+    await seedJob({ rawText: "<@U0BOT1> rail widget lite" });
+    const first = await runTurn();
+    expect(first.composeCalls).toHaveLength(1);
+    expect(first.composeCalls[0]?.variantText).toContain("lite");
+
+    await seedJob({ rawText: "<@U0BOT1> --discord" });
+    const second = await runTurn();
+    expect(second.composeCalls).toHaveLength(1);
+    expect(second.composeCalls[0]?.ref.slug).toBe("rail-widget");
+
+    await seedJob({ rawText: "<@U0BOT1> --direct" });
+    const third = await runTurn();
+    expect(third.composeCalls).toHaveLength(1);
+    expect(third.composeCalls[0]?.ref.slug).toBe("rail-widget");
+    // The bug: turn 3's predecessor is the `--discord` turn, so the
+    // gating text used to become "<@U0BOT1> --discord" here.
+    expect(third.composeCalls[0]?.variantText).toContain("lite");
+
+    // What the operator actually copies — asserted on all three turns, so
+    // this cannot pass by the notice being absent everywhere.
+    for (const turn of [first, second, third]) {
+      expect(JSON.stringify(turn.postCalls[0]?.body)).toContain(notice);
+    }
+
+    // And the memory itself keeps pointing at the naming turn's text
+    // rather than walking forward one turn at a time.
+    const contexts = await Promise.all(
+      [1, 2, 3].map(async (n) => {
+        const row = await env!.db
+          .prepare("SELECT resolved_context FROM jobs WHERE event_id = ?")
+          .bind(`ev-${n}`)
+          .first<{ resolved_context: string | null }>();
+        return parseResolvedJobContext(row?.resolved_context ?? null);
+      }),
+    );
+    expect(contexts.map((context) => context?.variantText)).toEqual([
+      "<@U0BOT1> rail widget lite",
+      "<@U0BOT1> rail widget lite",
+      "<@U0BOT1> rail widget lite",
+    ]);
   });
 
   it("an inherited built/kit variant is carried, not re-guessed", async () => {

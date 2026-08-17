@@ -387,7 +387,12 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
         rawText: "2v2",
       });
 
-      await recordResolvedContext(deps, job!.id, { slug: "2v2", variant: null, arrivalSchedule: "明後日月曜（8/18）到着予定になります。" });
+      await recordResolvedContext(deps, job!.id, {
+        slug: "2v2",
+        variant: null,
+        arrivalSchedule: "明後日月曜（8/18）到着予定になります。",
+        variantText: "<@U0BOT1> 2v2 lite",
+      });
       const first = await deps.db.prepare("SELECT resolved_context FROM jobs WHERE id = ?").bind(job!.id).first<{
         resolved_context: string | null;
       }>();
@@ -395,10 +400,11 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
         slug: "2v2",
         variant: null,
         arrivalSchedule: "明後日月曜（8/18）到着予定になります。",
+        variantText: "<@U0BOT1> 2v2 lite",
       });
 
       // Overwriting the same job's context (e.g. a variant clarified after the fact) is a plain UPDATE, not a conflict.
-      await recordResolvedContext(deps, job!.id, { slug: "2v2", variant: "kit", arrivalSchedule: null });
+      await recordResolvedContext(deps, job!.id, { slug: "2v2", variant: "kit", arrivalSchedule: null, variantText: null });
       const second = await deps.db.prepare("SELECT resolved_context FROM jobs WHERE id = ?").bind(job!.id).first<{
         resolved_context: string | null;
       }>();
@@ -406,6 +412,7 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
         slug: "2v2",
         variant: "kit",
         arrivalSchedule: null,
+        variantText: null,
       });
     });
 
@@ -424,12 +431,19 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
         expect(parseResolvedJobContext(JSON.stringify("just a string"))).toBeNull();
       });
 
-      it("coerces a missing/non-string variant or arrivalSchedule to null instead of failing the whole parse", () => {
+      it("coerces a missing/non-string variant, arrivalSchedule or variantText to null instead of failing the whole parse", () => {
+        // Also the compatibility path for a blob written before
+        // `variantText` existed (epic #22 seam fix): it parses, and its
+        // reader falls back to the source job's raw text.
         expect(parseResolvedJobContext(JSON.stringify({ slug: "2v2" }))).toEqual({
           slug: "2v2",
           variant: null,
           arrivalSchedule: null,
+          variantText: null,
         });
+        expect(
+          parseResolvedJobContext(JSON.stringify({ slug: "2v2", variantText: 42 }))?.variantText,
+        ).toBeNull();
       });
     });
 
@@ -448,7 +462,7 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
           actorUserId: "U1",
           rawText: "2v2",
         });
-        await recordResolvedContext(deps, replyA!.id, { slug: "2v2", variant: null, arrivalSchedule: null });
+        await recordResolvedContext(deps, replyA!.id, { slug: "2v2", variant: null, arrivalSchedule: null, variantText: null });
 
         // A polish job never resolves a product -- resolved_context stays NULL, and its kind alone should exclude it anyway.
         setClock(clockMs + 1000);
@@ -484,7 +498,7 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
           actorUserId: "U1",
           rawText: "wingie2",
         });
-        await recordResolvedContext(deps, replyD!.id, { slug: "wingie2", variant: null, arrivalSchedule: null });
+        await recordResolvedContext(deps, replyD!.id, { slug: "wingie2", variant: null, arrivalSchedule: null, variantText: null });
 
         setClock(clockMs + 1000);
         const currentJob = await recordIncomingEvent(deps, {
@@ -534,7 +548,7 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
           actorUserId: "U1",
           rawText: "2v2",
         });
-        await recordResolvedContext(deps, otherThreadJob!.id, { slug: "2v2", variant: null, arrivalSchedule: null });
+        await recordResolvedContext(deps, otherThreadJob!.id, { slug: "2v2", variant: null, arrivalSchedule: null, variantText: null });
 
         setClock(clockMs + 1000);
         const thisThreadJob = await recordIncomingEvent(deps, {

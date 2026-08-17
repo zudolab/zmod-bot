@@ -490,7 +490,15 @@ describe("recording resolved context from a disambiguation click", () => {
     });
 
     const context = parseResolvedJobContext((await getJobById(deps, jobId))?.resolved_context ?? null);
-    expect(context).toEqual({ slug: GENERAL_SLUG, variant: "built", arrivalSchedule: "明後日月曜（8/18）到着予定になります。" });
+    expect(context).toEqual({
+      slug: GENERAL_SLUG,
+      variant: "built",
+      arrivalSchedule: "明後日月曜（8/18）到着予定になります。",
+      // This mention named the product, so its own text is what gates
+      // `variant-match` literal blocks for it and for anything inheriting
+      // from it (ResolvedJobContext.variantText).
+      variantText: `<@${BOT_USER_ID}> ${GENERAL_ALIAS}`,
+    });
   });
 
   it("a variant_pick that chains into the arrival picker records the product before the date is known", async () => {
@@ -514,6 +522,11 @@ describe("recording resolved context from a disambiguation click", () => {
     });
 
     const context = parseResolvedJobContext((await getJobById(deps, jobId))?.resolved_context ?? null);
-    expect(context).toEqual({ slug: VARIANT_SLUG, variant: "kit", arrivalSchedule: null });
+    expect(context).toEqual({
+      slug: VARIANT_SLUG,
+      variant: "kit",
+      arrivalSchedule: null,
+      variantText: `<@${BOT_USER_ID}> ${VARIANT_ALIAS}`,
+    });
   });
 });

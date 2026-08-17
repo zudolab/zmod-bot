@@ -730,9 +730,12 @@ export async function updateJobState(deps: RepoDeps, input: UpdateJobStateInput)
  * into a {@link ResolvedJobContext}, or `null` if the column is NULL, the
  * JSON is malformed, or the parsed value is missing a string `slug`. A bad
  * blob must degrade to "no memory" rather than throw and break a reply
- * (epic #22 thread continuity). `variant` / `arrivalSchedule` are coerced
- * to `null` when absent or non-string rather than failing the whole parse
- * — only `slug` is load-bearing for inheritance.
+ * (epic #22 thread continuity). `variant` / `arrivalSchedule` /
+ * `variantText` are coerced to `null` when absent or non-string rather
+ * than failing the whole parse — only `slug` is load-bearing for
+ * inheritance. That coercion is also the compatibility path for rows
+ * written before `variantText` existed: they parse fine and their reader
+ * falls back to the prior job's raw text (src/jobs/thread-context.ts).
  */
 export function parseResolvedJobContext(raw: string | null): ResolvedJobContext | null {
   if (raw === null) return null;
@@ -743,12 +746,13 @@ export function parseResolvedJobContext(raw: string | null): ResolvedJobContext 
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-  const { slug, variant, arrivalSchedule } = parsed as Record<string, unknown>;
+  const { slug, variant, arrivalSchedule, variantText } = parsed as Record<string, unknown>;
   if (typeof slug !== "string") return null;
   return {
     slug,
     variant: typeof variant === "string" ? variant : null,
     arrivalSchedule: typeof arrivalSchedule === "string" ? arrivalSchedule : null,
+    variantText: typeof variantText === "string" ? variantText : null,
   };
 }
 

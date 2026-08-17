@@ -59,6 +59,7 @@ import {
   type RepoDeps,
 } from "../db/repos";
 import type { ProductRefRow } from "../db/schema";
+import { findClickTimeThreadContext } from "../jobs/thread-context";
 import { buildAuthoredRefPayload } from "../refs/commands";
 import { resolveProductRef } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
@@ -629,8 +630,9 @@ interface FinishReplyContext extends BuildReplyPayloadInput {
 }
 
 /**
- * Re-resolves a reply job and builds the message it should now show —
- * **either** the composed reply **or** the arrival picker, whichever the
+ * Re-resolves a reply job (from its own text, or, for a modifier-only
+ * mention, from the thread it inherited from) and builds the message it
+ * should now show — **either** the composed reply **or** the arrival picker, whichever the
  * resolution leaves it needing. Returns null when nothing can be built
  * (job gone, parse drift, product no longer resolvable), having logged
  * why.
@@ -662,19 +664,42 @@ async function buildFinishReplyPayload(
   }
 
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
-  if (parsed.kind !== "reply") {
+  // `reply_modifiers` (`@bot --discord`, issue #27) is as legitimate here
+  // as `reply`: such a turn posts a picker whenever the context it
+  // inherited has no arrival date, or an undecided general-diy variant —
+  // and the click that answers lands right here. Treating it as drift
+  // made that click a silent no-op.
+  if (parsed.kind !== "reply" && parsed.kind !== "reply_modifiers") {
     log("error", "interactions: parseCommand drift for job on click", { jobId: ctx.jobId, parsedKind: parsed.kind });
     return null;
   }
 
   let refRow: ProductRefRow | null = null;
   let purchased: "built" | "kit" = "built";
+  // Defaults to this job's own text, and is replaced by the thread's when
+  // the mention named no product — see ResolvedJobContext.variantText.
+  let variantText = job.raw_text;
+  /** The arrival date the thread already knows, for a modifier-only mention. Lowest precedence — see the arrival resolution below. */
+  let inheritedArrival: string | null = null;
   if (ctx.candidateSlugOverride) {
     refRow = await getProductRefBySlug(repoDeps, ctx.candidateSlugOverride);
     // The chosen candidate could itself be a general-diy product with an
     // as-yet-undetermined variant, but there is no second round of
     // disambiguation here — defaults to "built", same as
     // src/jobs/worker.ts composeMatchPayload's `resolved.variant ?? "built"`.
+  } else if (parsed.kind === "reply_modifiers") {
+    // A modifier-only mention names no product, so re-resolving its
+    // raw_text would resolve nothing. The product came from the thread —
+    // read it back from where the delivery worker recorded it, which is
+    // also the only place the variant-gating text still lives.
+    const inherited = await findClickTimeThreadContext(repoDeps, job);
+    if (inherited) {
+      refRow = await getProductRefBySlug(repoDeps, inherited.context.slug);
+      const storedVariant = inherited.context.variant;
+      if (storedVariant === "built" || storedVariant === "kit") purchased = storedVariant;
+      variantText = inherited.variantText;
+      inheritedArrival = inherited.context.arrivalSchedule;
+    }
   } else {
     const resolved = await resolveProductRef(repoDeps, job.raw_text);
     if (resolved.kind === "match") {
@@ -701,6 +726,17 @@ async function buildFinishReplyPayload(
       arrivalSchedule = formatArrivalSchedule({ dayLabel: option.dayLabel, month: option.month, day: option.day });
     }
   }
+  // Lowest precedence, and only ever set for a modifier-only mention:
+  // the click chose > this mention typed > the thread remembers. Same
+  // order src/jobs/worker.ts finishResolvedReply applies, so the click
+  // path never re-asks for a date the delivery path would have inherited.
+  if (arrivalSchedule === null) arrivalSchedule = inheritedArrival;
+  // The `small` template has no arrival sentence (Nekopos has no delivery
+  // date) and renderReply *throws* if handed one — which on this path
+  // means a click that silently does nothing. src/jobs/worker.ts
+  // composeMatchPayload drops the date the same way for the same reason;
+  // this is its mirror.
+  if (ref.category === "small") arrivalSchedule = null;
 
   if (ref.category !== "small" && arrivalSchedule === null) {
     // Resolved which product/variant, but still need an arrival date --
@@ -719,11 +755,16 @@ async function buildFinishReplyPayload(
     // The product is settled even though the date is not, so record it now
     // rather than only after the arrival click — the thread's memory should
     // not depend on the operator finishing the picker.
-    await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: purchased, arrivalSchedule: null });
+    await recordResolvedContext(repoDeps, job.id, {
+      slug: ref.slug,
+      variant: purchased,
+      arrivalSchedule: null,
+      variantText,
+    });
     return buildArrivalPickerPayload(job.id, deps.now, priorChoice);
   }
 
-  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: purchased, arrivalSchedule });
+  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: purchased, arrivalSchedule, variantText });
 
   const compose = deps.composeReply ?? defaultComposeReply;
   const composed = await compose(
@@ -731,7 +772,7 @@ async function buildFinishReplyPayload(
     // with the rest of this job's clock — src/reply/compose.ts
     // ComposeReplyDeps.now.
     { env, fetch: deps.fetch, now: deps.now },
-    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText: job.raw_text },
+    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText },
   );
   return buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
 }

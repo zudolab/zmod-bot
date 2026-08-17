@@ -117,8 +117,9 @@ export interface JobRow {
 }
 
 /**
- * What a reply job actually resolved to — slug, variant, arrival schedule.
- * Written by recordResolvedContext (src/db/repos.ts) once a reply job has
+ * What a reply job actually resolved to — slug, variant, arrival
+ * schedule, and the text that decided the variant. Written by
+ * recordResolvedContext (src/db/repos.ts) once a reply job has
  * resolved a product, and read back by findLatestResolvedThreadJob to give
  * a follow-up mention in the same thread its predecessor's context (epic
  * #22 thread continuity). Kept in schema.ts, not repos.ts, since later
@@ -135,6 +136,25 @@ export interface ResolvedJobContext {
    */
   variant: string | null;
   arrivalSchedule: string | null;
+  /**
+   * The operator text that gates `variant-match` literal blocks
+   * (src/reply/render.ts includesLiteralBlock — e.g. zudo-rail's Lite
+   * renewal notice): the raw text of the turn that *named* the product,
+   * propagated unchanged along a chain of modifier-only follow-ups.
+   *
+   * Carried here rather than re-read from the prior job's `raw_text`
+   * because that text is the immediately-preceding turn's, which in a
+   * chain of three or more is itself modifier-only (`@bot --discord`) and
+   * contains no needles — so the notice silently vanished from turn 3
+   * onward. These blocks are byte-exact customer-facing business text, so
+   * dropping one is a content-correctness defect with no visible symptom.
+   *
+   * `null` for a blob written before this field existed, and for a turn
+   * whose own text genuinely named no variant. Readers degrade to the
+   * prior job's `raw_text` (src/jobs/thread-context.ts), i.e. exactly the
+   * pre-widening behaviour.
+   */
+  variantText: string | null;
 }
 
 export type UsageTask = "compose" | "author" | "polish";
