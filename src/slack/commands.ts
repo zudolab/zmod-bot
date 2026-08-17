@@ -29,8 +29,37 @@ import {
 
 export type ArrivalPresetKey = "tomorrow" | "day_after_tomorrow" | "day_after_day_after_tomorrow";
 
+/**
+ * The modifier half of a `reply` command — the parts that mean the same
+ * thing whether or not the mention also named a product. Shared by the
+ * `reply` and `reply_modifiers` variants so a consumer that only needs
+ * the modifiers (src/jobs/worker.ts composeMatchPayload) can accept
+ * either without re-listing the fields.
+ */
+export interface ReplyModifiers {
+  discord: boolean;
+  direct: boolean;
+  arrival: ArrivalPresetKey | null;
+}
+
 export type ParsedCommand =
-  | { kind: "reply"; query: string; discord: boolean; direct: boolean; arrival: ArrivalPresetKey | null }
+  | ({ kind: "reply"; query: string } & ReplyModifiers)
+  /**
+   * Valid reply modifiers with no product query — `@bot --discord`,
+   * `@bot 明日 --direct` (epic #22 thread continuity, issue #27). This is
+   * a deliberately narrow carve-out from `unknown`: the *only* way to
+   * reach it is a mention whose every token is a known flag or a known
+   * arrival preset. An unknown flag, an empty mention and two
+   * contradictory arrival presets all still return `unknown`.
+   *
+   * The parser stays pure and says nothing about inheritance — it only
+   * reports that the mention carried modifiers and no product. Deciding
+   * whether a prior job in the thread supplies the missing product is
+   * src/jobs/worker.ts's job, and when nothing does, that path replies
+   * with exactly the {@link NO_PRODUCT_QUERY_REASON} + usage text this
+   * input produced before the carve-out existed.
+   */
+  | ({ kind: "reply_modifiers" } & ReplyModifiers)
   | { kind: "ref_show"; slug: string }
   | { kind: "ref_history"; slug: string }
   | { kind: "ref_new"; query: string }
@@ -47,6 +76,7 @@ export const USAGE_TEXT = [
   "`@bot <製品名またはURL>` — 返信を作成します（到着予定日が未指定ならボタンで確認します）",
   "`@bot <製品名> 明日|明後日|明々後日` — 到着予定日を指定して返信します",
   "`@bot <製品名> --discord --direct` — Discord案内を追加 / 直接取引（評価依頼なし）にします（順不同、どちらか片方でも両方でも可）",
+  "`@bot --discord` / `@bot 明日` — 同じスレッド内なら、直前に返信した製品のまま指定だけを付け直します（フラグは毎回指定し直しです）",
   "`@bot polish` の次の行に整えたい文章を貼り付けます",
   "`@bot ref show|history|restore|new|refresh <slugまたは製品名> [引数]` — 製品リファレンスの管理コマンド",
   "`@bot help` — この使い方を表示します",
@@ -80,6 +110,15 @@ const ARRIVAL_PRESET_BY_TOKEN: Record<string, ArrivalPresetKey> = {
   明々後日: "day_after_day_after_tomorrow",
 };
 const REF_SUBCOMMANDS = new Set(["show", "history", "restore", "new", "refresh"]);
+
+/**
+ * The Japanese explanation a mention naming no product gets. Exported
+ * because src/jobs/worker.ts replies with exactly this string when a
+ * `reply_modifiers` mention finds no thread context to inherit — the
+ * degradation contract for issue #27 is that such a mention gets the
+ * *same* message it got before inheritance existed, not a new one.
+ */
+export const NO_PRODUCT_QUERY_REASON = "製品名またはURLを指定してください。";
 
 function unknownCommand(raw: string, reason: string): ParsedCommand {
   return { kind: "unknown", raw, reason };
@@ -165,7 +204,17 @@ export function parseCommand(rawText: string, botUserId: string): ParsedCommand 
   }
 
   const query = queryWords.join(" ").trim();
-  if (query === "") return unknownCommand(rawText, "製品名またはURLを指定してください。");
+  if (query === "") {
+    // Modifiers with no product name — a `reply_modifiers` command, so a
+    // follow-up in a thread can be given its predecessor's product (see
+    // that variant's doc comment). The `unknown` fallback below is not
+    // reachable from a non-empty body (every token is either a modifier
+    // or a query word, and an empty body returned above), and is kept
+    // only so "no product AND no modifier" can never be mistaken for a
+    // valid command if that ever changes.
+    if (discord || direct || arrival !== null) return { kind: "reply_modifiers", discord, direct, arrival };
+    return unknownCommand(rawText, NO_PRODUCT_QUERY_REASON);
+  }
 
   return { kind: "reply", query, discord, direct, arrival };
 }

@@ -741,7 +741,7 @@ export async function buildRefCommandPayload(
   if (parsed.kind === "help") {
     return textPayload(USAGE_TEXT, "使い方");
   }
-  if (parsed.kind === "reply" || parsed.kind === "polish") {
+  if (parsed.kind === "reply" || parsed.kind === "reply_modifiers" || parsed.kind === "polish") {
     // src/slack/events.ts classifyJobKind routes a leading "ref" to
     // job.kind "ref" before this is ever reached, so the two tokenizers
     // disagreeing is a real bug, not a runtime state — same reasoning as
