@@ -216,17 +216,47 @@ edit landing while you're reviewing the preview gets caught and refused rather t
 overwritten). Approve it from the Slack message the bot posts, the same way you'd approve a
 `ref refresh`.
 
-## Reference authoring — current status
+## Reference authoring
 
-`ref new` (write a brand-new reference from scratch) and `ref refresh` (fold new videos/guides into
-an existing one) are designed in issue #17 — LLM-generated draft, machine-checked against the
-existing corpus format, admin-approved through the same draft/preview flow as everything else in
-this section — but **as of this doc, both commands and the "create a reference" button on a
-resolver-miss reply return a placeholder message rather than doing that work**
-(`src/refs/commands.ts`, `src/slack/interactions.ts`). If you invoke either and get back "まだ実装され
-ていません", that's expected given the current build state, not a misconfiguration — check whether
-issue #17 has since merged before assuming this doc is wrong. `AUTHOR_PROVIDER` and `SITE_API_BASE`
-above exist for this feature and are unused until it lands.
+`ref new` (write a brand-new reference from scratch) and `ref refresh` (fold new videos and guides
+into an existing one) are implemented, along with the **"create a reference" button** on a
+resolver-miss reply — clicking it (admin only) runs the same pipeline, so a first-time purchase does
+not need a separate admin ritual. `AUTHOR_PROVIDER` and `SITE_API_BASE` are read by this path.
+
+Nothing here writes to `product_refs` directly. Authoring produces a `ref_drafts` row and a preview;
+an admin clicking approve is what commits it, and the approve path re-parses the body and re-derives
+its aliases at that point.
+
+**A guard trip writes nothing and says why.** Unlike the reply and polish paths, authoring has **no
+deterministic fallback** — there is no way to invent a reference that does not exist, and a
+half-invented one is worse than none. The operator sees the reason token (`url_mismatch`,
+`schema_invalid`, `truncated`, `budget_exceeded`, `provider_error`), a mechanical detail, and an
+explicit 「何も書き込んでいません」. The remedy is always to re-run or hand-write.
+
+**Every preview states a coverage caveat, and it is not boilerplate.** No endpoint exposes
+manuals-per-product or guide-series-per-product (both are SSR-only on the website), so the human
+reviewing the draft is the only check on whether the resource list is complete. The preview also
+flags a degraded source, a truncated read, refused aliases, a changed `product_url`, and that
+`category` was the model's choice — that last one matters more than it looks, because `general` vs
+`small` selects the ヤマト or ネコポス shipping line in every reply the reference later produces.
+
+Operational limits:
+
+- **Budget: 50 author calls per UTC day**, counted under task `author` — a separate counter from
+  compose and polish. A budget trip is recorded in `usage_log` even though no provider call happened.
+- **`AUTHOR_DEADLINE_MS` is 60s and unmeasured.** The smoke test should record real end-to-end time
+  and correct it.
+- **Drafts expire after 30 minutes.** An expired preview must be re-run, not clicked.
+
+Two known limitations, both deliberate rather than oversights:
+
+- **A refresh that needs a category change is a dead end today.** The draft check refuses any change
+  to `category`, and if the catalog has since gained a DIY variant the constraint demands one — so
+  both fire and nothing can be drafted. There is no `ref edit`; the operator's only route is a
+  manual body change.
+- **After approving an authored reference, the bot does not automatically post the reply that was
+  originally asked for.** `ref_drafts` carries no originating job id, so there is nothing to resume.
+  Mention the product again to get the reply. Tracked separately.
 
 ## AI Gateway is deliberately not wired up
 
