@@ -8,6 +8,7 @@ import {
   buildReplyMessagePayload,
   CREATE_REFERENCE_ACTION_ID,
   escapeMrkdwn,
+  MAX_CHARS_PER_SECTION_TEXT,
   splitPreformattedText,
 } from "./blocks";
 
@@ -180,6 +181,80 @@ describe("buildMissingRefBlocks", () => {
     const blocks = buildMissingRefBlocks("q", oversized) as [unknown, { elements: Array<{ value: string }> }];
 
     expect(blocks[1].elements[0]?.value).toBe(oversized);
+  });
+
+  /**
+   * Issue #31. The section is the *other* half, and it fails the opposite
+   * way: Slack rejects an oversized `section.text` with `invalid_blocks`,
+   * which kills the whole message — the customer gets no reply at all
+   * rather than a shortened one. A mention is unbounded free text, so
+   * nothing upstream keeps this under the cap.
+   */
+  it("truncates a query too long for the section rather than letting Slack reject the whole message", () => {
+    const blocks = buildMissingRefBlocks("q".repeat(10_000), "v") as [{ text: { text: string } }, unknown];
+
+    const text = blocks[0].text.text;
+    expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    expect(text).toContain("…");
+    // Still a complete sentence, not a message sliced off mid-chrome.
+    expect(text).toMatch(/^「/);
+    expect(text).toMatch(/に一致する製品リファレンスが見つかりませんでした。$/);
+  });
+
+  it("leaves a query that already fits untouched, marker included", () => {
+    const blocks = buildMissingRefBlocks("zt seq", "v") as [{ text: { text: string } }, unknown];
+
+    expect(blocks[0].text.text).toBe("「zt seq」に一致する製品リファレンスが見つかりませんでした。");
+    expect(blocks[0].text.text).not.toContain("…");
+  });
+
+  /**
+   * The budget has to be charged per character *after* escaping, and the
+   * bound has to be two-sided. escapeMrkdwn turns one `&` into five
+   * characters, so trimming to the raw cap overflows ~5x — but converting
+   * that rendered overflow back into a source-length cut over-corrects
+   * just as badly, throwing away a query that would have fit. Both
+   * mistakes pass a one-sided "is it under the cap" assertion, which is
+   * why the headroom is pinned too.
+   */
+  it("charges each character its escaped cost, filling the budget without overflowing it", () => {
+    const blocks = buildMissingRefBlocks("&".repeat(MAX_CHARS_PER_SECTION_TEXT), "v") as [
+      { text: { text: string } },
+      unknown,
+    ];
+
+    const text = blocks[0].text.text;
+    expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    // Within one 5-char `&amp;` of the cap — i.e. it kept every ampersand that fit.
+    expect(text.length).toBeGreaterThan(MAX_CHARS_PER_SECTION_TEXT - 5);
+    expect(text).not.toContain("&&");
+    expect(text).toContain("&amp;");
+  });
+
+  /**
+   * Slicing between the two code units of an astral character leaves a
+   * lone high surrogate, which is not valid UTF-8 on the wire. A query of
+   * nothing but emoji puts a cut on that boundary every other character.
+   */
+  it("does not leave a half-character at the cut", () => {
+    const blocks = buildMissingRefBlocks("🍣".repeat(4_000), "v") as [{ text: { text: string } }, unknown];
+
+    const text = blocks[0].text.text;
+    expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    // A lone surrogate survives JSON round-tripping as an escape; a paired one does not.
+    expect(JSON.stringify(text)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+  });
+
+  it("truncating the section does not touch the button value", () => {
+    const value = '{"v":1,"id":"7","a":"short"}';
+
+    const blocks = buildMissingRefBlocks("q".repeat(10_000), value) as [
+      { text: { text: string } },
+      { elements: Array<{ value: string }> },
+    ];
+
+    expect(blocks[0].text.text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    expect(blocks[1].elements[0]?.value).toBe(value);
   });
 });
 

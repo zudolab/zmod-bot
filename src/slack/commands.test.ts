@@ -424,7 +424,13 @@ describe("buildMissingRefPayload", () => {
     expect(decodeButtonValue(value)).toEqual({ v: 1, id: "4242", a: "zt seq" });
   });
 
-  it("still shows the unabridged query in the message text", () => {
+  /**
+   * "In full" holds up to the section's own 3000-char ceiling — past that
+   * the builder truncates rather than let Slack reject the message
+   * (issue #31, src/slack/blocks.ts). A query this short is nowhere near
+   * it, so what is shown is still byte-for-byte the operator's text.
+   */
+  it("shows the query in full, escaped, when it fits the section", () => {
     const payload = buildMissingRefPayload({ query: "Foo & <Bar>", originJobId: 1 });
 
     expect(JSON.stringify(payload.blocks[0])).toContain("Foo &amp; &lt;Bar&gt;");
