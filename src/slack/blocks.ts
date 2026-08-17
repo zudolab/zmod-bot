@@ -22,6 +22,14 @@ export function escapeMrkdwn(text: string): string {
 // body, so it is not an active split boundary.
 export const MAX_BLOCKS_PER_MESSAGE = 50;
 export const MAX_CHARS_PER_PREFORMATTED_BLOCK = 3_000;
+/**
+ * Slack's documented ceiling for a `section` block's mrkdwn `text` — the
+ * same 3,000 the comment above *borrows* for `rich_text_preformatted`,
+ * named separately because here it is the documented limit rather than a
+ * conservative reuse of one. An oversized section is rejected outright
+ * (`invalid_blocks`), taking the whole message with it.
+ */
+export const MAX_CHARS_PER_SECTION_TEXT = 3_000;
 
 /**
  * Splits `text` into chunks of at most `maxChars`, breaking only right
@@ -182,16 +190,81 @@ export function buildApprovalBlocks(input: ApprovalButtonsInput): unknown[] {
 /** Interaction-payload action_id for the "create a reference" button built by buildMissingRefBlocks. */
 export const CREATE_REFERENCE_ACTION_ID = "create_reference";
 
+/** Appended to a query the miss reply had to shorten, so the reader can tell the text was cut rather than typed that way. */
+const MISSING_REF_TRUNCATION_MARKER = "…";
+
+/**
+ * The miss reply's section text for an already-fitted `query`. Escaping
+ * happens here rather than at the call site because the budget below has
+ * to measure the *escaped* length: `escapeMrkdwn` turns one `&` into five
+ * characters, so a query trimmed to a raw-length budget can still
+ * overflow.
+ */
+function missingRefSectionText(query: string): string {
+  return `「${escapeMrkdwn(query)}」に一致する製品リファレンスが見つかりませんでした。`;
+}
+
+/**
+ * Fits `query` into a miss-reply section that respects
+ * MAX_CHARS_PER_SECTION_TEXT (issue #31).
+ *
+ * A mention is unbounded free text and the failure mode is total rather
+ * than degraded: Slack rejects an oversized section with
+ * `invalid_blocks`, so the customer gets *no* reply instead of a
+ * shortened one.
+ *
+ * Two things make the obvious `slice` wrong, and both are why this walks
+ * the query a character at a time charging each one its *escaped* cost:
+ *
+ * - Escaping is not one-for-one, so an overflow counted in rendered
+ *   characters cannot be subtracted from a source length. A query of
+ *   3,000 `&` renders as 15,000 characters; slicing off the 12,000-odd
+ *   overflow would leave nothing at all, when ~590 of them fit.
+ * - Slicing by code unit can land between the halves of an astral
+ *   character (emoji, rarer kanji) and emit a lone surrogate, which is not
+ *   valid UTF-8 on the wire. Iterating the string yields whole code
+ *   points, so no cut can fall inside one.
+ *
+ * The per-character cost comes from escapeMrkdwn itself rather than a
+ * hand-written table of its expansions, so the two can never drift.
+ */
+function fitMissingRefSectionText(query: string): string {
+  const full = missingRefSectionText(query);
+  if (full.length <= MAX_CHARS_PER_SECTION_TEXT) return full;
+
+  // What is left for the query once the fixed chrome and the marker are paid for.
+  const budget = MAX_CHARS_PER_SECTION_TEXT - missingRefSectionText(MISSING_REF_TRUNCATION_MARKER).length;
+  let kept = "";
+  let spent = 0;
+  for (const character of query) {
+    const cost = escapeMrkdwn(character).length;
+    if (spent + cost > budget) break;
+    kept += character;
+    spent += cost;
+  }
+  return missingRefSectionText(kept + MISSING_REF_TRUNCATION_MARKER);
+}
+
 /**
  * Builds the "no reference found" message: a mrkdwn note plus an inline
  * "create a reference" button (epic issue #1 decision 7).
  *
- * `buttonValue` arrives already encoded and already inside Slack's
- * 2000-char `value` ceiling — src/slack/commands.ts buildMissingRefPayload
- * owns both, the same way it owns the arrival/variant/candidate pickers'
- * envelopes. This builder must NOT truncate it: since issue #25 the value
- * is a JSON envelope carrying the originating job id, and slicing JSON
- * yields a value that decodes to `null` rather than a shorter one.
+ * The two halves are bounded in opposite places, and deliberately so:
+ *
+ * - `query` is display text, so it is truncated *here*, against the
+ *   section's own ceiling (issue #31). Before that, a mention over ~3,000
+ *   characters made the entire message unpostable.
+ * - `buttonValue` arrives already encoded and already inside Slack's
+ *   2000-char `value` ceiling — src/slack/commands.ts
+ *   buildMissingRefPayload owns both, the same way it owns the
+ *   arrival/variant/candidate pickers' envelopes. This builder must NOT
+ *   truncate it: since issue #25 the value is a JSON envelope carrying
+ *   the originating job id, and slicing JSON yields a value that decodes
+ *   to `null` rather than a shorter one.
+ *
+ * So the shown query and the query inside the button can differ in
+ * length. That is fine — they answer to different limits, and the button
+ * only has to survive the round trip.
  */
 export function buildMissingRefBlocks(query: string, buttonValue: string): unknown[] {
   return [
@@ -200,7 +273,7 @@ export function buildMissingRefBlocks(query: string, buttonValue: string): unkno
       block_id: "missing_ref_message",
       text: {
         type: "mrkdwn",
-        text: `「${escapeMrkdwn(query)}」に一致する製品リファレンスが見つかりませんでした。`,
+        text: fitMissingRefSectionText(query),
       },
     },
     {

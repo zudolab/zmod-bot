@@ -14,6 +14,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { buildCandidatePickerPayload, buildMissingRefPayload, decodeButtonValue, MAX_BUTTON_VALUE_CHARS } from "../../src/slack/commands";
+import { escapeMrkdwn, MAX_CHARS_PER_SECTION_TEXT } from "../../src/slack/blocks";
 import { parseProductRefMarkdown } from "../../src/refs/parse";
 
 const sources = Object.entries(
@@ -43,6 +44,12 @@ const corpusQueries = [
 function extractButtonValues(payload: { blocks: unknown[] }): string[] {
   const json = JSON.stringify(payload.blocks);
   return [...json.matchAll(/"value":"((?:[^"\\]|\\.)*)"/g)].map((match) => JSON.parse(`"${match[1]!}"`) as string);
+}
+
+/** The miss reply's mrkdwn `section` text, as Slack would receive it. */
+function missingRefSectionText(query: string): string {
+  const payload = buildMissingRefPayload({ query, originJobId: 999_999 });
+  return (payload.blocks[0] as { text: { text: string } }).text.text;
 }
 
 describe("button values stay under Slack's 2000-char cap for every seed reference", () => {
@@ -104,5 +111,47 @@ describe("button values stay under Slack's 2000-char cap for every seed referenc
     for (const { slug, markdown } of sources) {
       expect(() => parseProductRefMarkdown({ slug, markdown })).not.toThrow();
     }
+  });
+});
+
+/**
+ * The miss reply's other unbounded half (issue #31). The button `value`
+ * above fails soft — an overlong one is truncated and the click still
+ * works — but the `section` fails hard: Slack rejects an oversized
+ * `section.text` with `invalid_blocks` and drops the *entire* message, so
+ * the customer gets no reply at all. Nothing upstream bounds the input;
+ * the query is whatever the operator's mention contained.
+ */
+describe("the miss reply's section text stays under Slack's 3000-char cap", () => {
+  it.each(corpusQueries)("missing_ref section for the query %s", (query) => {
+    const text = missingRefSectionText(query);
+
+    expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    // A corpus name is nowhere near the cap, so it must survive verbatim.
+    expect(text).toContain(query);
+    expect(text).not.toContain("…");
+  });
+
+  /**
+   * Every corpus name concatenated comes to ~2,900 characters — just
+   * *under* the section cap, which is why this doubles it rather than
+   * using the single join the button-value case above can rely on (2,000
+   * is the lower bar). Corpus text rather than filler because it carries
+   * the real mix of Japanese, ASCII and escapable characters an operator
+   * would actually paste.
+   */
+  it("stays postable when the query is far past the cap", () => {
+    const absurd = `${corpusQueries.join(" ")} ${corpusQueries.join(" ")}`;
+    expect(absurd.length).toBeGreaterThan(MAX_CHARS_PER_SECTION_TEXT);
+
+    const text = missingRefSectionText(absurd);
+
+    expect(text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    expect(text).toContain("…");
+    expect(text).toMatch(/に一致する製品リファレンスが見つかりませんでした。$/);
+    // What survives is a prefix of the query, not a mangled or reordered
+    // one. Compared against the escaped form so a corpus name that later
+    // gains an `&` does not turn this into a false failure.
+    expect(escapeMrkdwn(absurd).startsWith(text.slice(1, text.indexOf("…")))).toBe(true);
   });
 });
