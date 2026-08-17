@@ -53,7 +53,9 @@ import {
 import {
   getJobById,
   getProductRefBySlug,
+  getRefDraft,
   recordInteractionReceipt,
+  recordResolvedContext,
   type RepoDeps,
 } from "../db/repos";
 import type { ProductRefRow } from "../db/schema";
@@ -278,9 +280,13 @@ async function handleBlockActions(
     const draftId = envelopeForKey?.id ?? "";
     const approve = click.actionId === ACTION_IDS.refApprove;
     deps.waitUntil(
-      handleRefDraftDecision(repoDeps, slackApiDeps, { draftId, approve, actorUserId: click.userId, channelId: click.channelId, messageTs: click.messageTs }).catch(
-        (error) => log("error", "interactions: ref draft decision failed", { error: errorText(error) }),
-      ),
+      handleRefDraftDecision(env, repoDeps, deps, slackApiDeps, {
+        draftId,
+        approve,
+        actorUserId: click.userId,
+        channelId: click.channelId,
+        messageTs: click.messageTs,
+      }).catch((error) => log("error", "interactions: ref draft decision failed", { error: errorText(error) })),
     );
     return ack();
   }
@@ -479,7 +485,9 @@ async function updateOriginalMessage(
  * click rather than at render time.
  */
 async function handleRefDraftDecision(
+  env: Env,
   repoDeps: RepoDeps,
+  deps: SlackInteractionsDeps,
   slackApiDeps: SlackApiDeps,
   ctx: { draftId: string; approve: boolean; actorUserId: string; channelId: string; messageTs: string },
 ): Promise<void> {
@@ -497,11 +505,89 @@ async function handleRefDraftDecision(
 
   const outcome = await approveRefDraft(repoDeps, ctx.draftId, ctx.actorUserId);
   const message = describeRefDraftOutcome(outcome);
-  if (outcome.kind === "committed") {
-    await tryUpdate(slackApiDeps, ctx, buildTextPayload(message));
+  if (outcome.kind !== "committed") {
+    // Every refusal (gone/expired, stale base_version, unparseable body,
+    // alias conflict, lost race) wrote nothing, so there is nothing to
+    // resume from -- the reply resume below is downstream of the COMMIT,
+    // never of the click.
+    await tryEphemeral(slackApiDeps, ctx, message);
     return;
   }
-  await tryEphemeral(slackApiDeps, ctx, message);
+
+  // The preview update and the origin-thread reply are two independent
+  // deliveries: a Slack failure replacing the preview must not cost the
+  // customer-facing reply the mention actually asked for (epic #22 / issue
+  // #26). Hence the catch here rather than one try around both.
+  try {
+    await tryUpdate(slackApiDeps, ctx, buildTextPayload(message));
+  } catch (error) {
+    log("warn", "interactions: approval preview update failed; continuing to the origin-thread reply", {
+      error: errorText(error),
+    });
+  }
+  await resumeOriginReply(env, repoDeps, deps, slackApiDeps, ctx.draftId);
+}
+
+/**
+ * Closes the loop opened in issue #21: a mention resolved to no reference,
+ * the bot offered `create_reference`, an admin authored one and just
+ * approved it -- so now post the reply that mention originally asked for,
+ * into its own thread.
+ *
+ * Reached only from a **successful commit**. `commitRefDraft` stamps
+ * `consumed_at` inside the same `db.batch()` as the write
+ * (src/db/repos.ts), and approveRefDraft refuses outright on an
+ * already-consumed draft, so a second approve click never reaches the
+ * commit and therefore never reaches here. That existing fence is the
+ * double-post guard; there is deliberately no second mechanism.
+ *
+ * **Delivery is at-most-once, by decision.** If the Worker dies or Slack
+ * fails terminally after the commit, this reply is lost with no retry --
+ * `consumed_at` is already stamped, so clicking approve again refuses. The
+ * operator's recovery is to mention the product again, which now resolves
+ * to a `match`. An outbox for this one path is disproportionate to a rare
+ * failure with a trivial manual recovery. This is not an oversight.
+ *
+ * The origin job row is guaranteed to still exist: a draft lives 30
+ * minutes (its `expires_at` TTL), far inside the 7-day retention window
+ * for `done` jobs (src/jobs/retention.ts), so a draft live enough to
+ * approve cannot outlive the job that spawned it.
+ *
+ * Posting rather than updating is the whole point -- updateOriginalMessage
+ * would rewrite the approval preview, which lives wherever the admin
+ * clicked, not in the customer's thread.
+ */
+async function resumeOriginReply(
+  env: Env,
+  repoDeps: RepoDeps,
+  deps: SlackInteractionsDeps,
+  slackApiDeps: SlackApiDeps,
+  draftId: string,
+): Promise<void> {
+  // Re-read post-commit: the row survives the commit with `consumed_at`
+  // stamped, so this costs one query only on the success path.
+  const draft = await getRefDraft(repoDeps, draftId);
+  const originJobId = draft?.origin_job_id ?? null;
+  // No origin -- an explicit `@bot ref new/refresh`, or a create_reference
+  // button rendered before issue #25. Nothing asked for a reply; approving
+  // is the whole interaction.
+  if (originJobId === null) return;
+
+  const job = await getJobById(repoDeps, originJobId);
+  if (!job) {
+    log("warn", "interactions: origin job missing for approved draft", { jobId: originJobId });
+    return;
+  }
+
+  // No overrides: re-resolving from the original mention is exactly what a
+  // fresh mention would now do, and the alias the approval just registered
+  // is what makes it hit. A miss here (the authored aliases do not cover
+  // the typed text) posts nothing and logs -- same manual recovery as any
+  // other lost delivery above.
+  const payload = await buildFinishReplyPayload(env, repoDeps, deps, { jobId: job.id, arrivalSchedule: null });
+  if (!payload) return;
+
+  await postMessage(slackApiDeps, { channel: job.channel_id, threadTs: job.thread_ts, payload });
 }
 
 async function tryUpdate(
@@ -527,33 +613,58 @@ async function tryEphemeral(
  * arrival_pick / variant_pick / candidate_pick — finish composing.
  * ---------------------------------------------------------------------- */
 
-interface FinishReplyContext {
+/** What a reply payload can be built from: a job, plus whatever a click already pinned down. */
+interface BuildReplyPayloadInput {
   jobId: number;
   /** Already-resolved (from an arrival_pick click or the arrival_other modal), or null to fall back to the original mention's typed preset, or to ask again. */
   arrivalSchedule: string | null;
   variantOverride?: "built" | "kit";
   candidateSlugOverride?: string;
+}
+
+interface FinishReplyContext extends BuildReplyPayloadInput {
   channelId: string;
   messageTs: string;
   responseUrl?: string;
 }
 
-async function finishReplyAfterInteraction(
+/**
+ * Re-resolves a reply job and builds the message it should now show —
+ * **either** the composed reply **or** the arrival picker, whichever the
+ * resolution leaves it needing. Returns null when nothing can be built
+ * (job gone, parse drift, product no longer resolvable), having logged
+ * why.
+ *
+ * Deliberately knows nothing about delivery: its two callers post the
+ * result to different places — finishReplyAfterInteraction replaces the
+ * clicked message, resumeOriginReply posts into the origin thread (issue
+ * #26). Callers must handle **both** shapes: a freshly authored reference
+ * is frequently `general`, which needs an arrival date, so the picker is
+ * the common case there, not the exception.
+ *
+ * Also where `jobs.resolved_context` is written for the interaction path
+ * (epic #22): a job finished by a variant/candidate/arrival click is often
+ * the most recent reply job in its thread, and the variant a click chose
+ * appears nowhere in `raw_text` — so without this the next mention in the
+ * thread would have nothing to inherit. Mirrors what src/jobs/worker.ts
+ * writes from the non-interactive path.
+ */
+async function buildFinishReplyPayload(
   env: Env,
   repoDeps: RepoDeps,
   deps: SlackInteractionsDeps,
-  ctx: FinishReplyContext,
-): Promise<void> {
+  ctx: BuildReplyPayloadInput,
+): Promise<SlackMessagePayload | null> {
   const job = await getJobById(repoDeps, ctx.jobId);
   if (!job) {
     log("warn", "interactions: job not found for click", { jobId: ctx.jobId });
-    return;
+    return null;
   }
 
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
   if (parsed.kind !== "reply") {
     log("error", "interactions: parseCommand drift for job on click", { jobId: ctx.jobId, parsedKind: parsed.kind });
-    return;
+    return null;
   }
 
   let refRow: ProductRefRow | null = null;
@@ -576,7 +687,7 @@ async function finishReplyAfterInteraction(
   if (ctx.variantOverride) purchased = ctx.variantOverride;
   if (!refRow) {
     log("warn", "interactions: could not re-resolve product for click", { jobId: ctx.jobId });
-    return;
+    return null;
   }
 
   const ref = parseProductRefMarkdown({ slug: refRow.slug, markdown: refRow.body_md });
@@ -590,8 +701,6 @@ async function finishReplyAfterInteraction(
       arrivalSchedule = formatArrivalSchedule({ dayLabel: option.dayLabel, month: option.month, day: option.day });
     }
   }
-
-  const slackApiDeps: SlackApiDeps = { botToken: env.SLACK_BOT_TOKEN, fetch: deps.fetch, sleep: deps.sleep };
 
   if (ref.category !== "small" && arrivalSchedule === null) {
     // Resolved which product/variant, but still need an arrival date --
@@ -607,9 +716,14 @@ async function finishReplyAfterInteraction(
       : ctx.variantOverride
         ? encodePriorChoice({ kind: "variant", variant: ctx.variantOverride })
         : undefined;
-    await updateOriginalMessage(deps, slackApiDeps, ctx, buildArrivalPickerPayload(job.id, deps.now, priorChoice));
-    return;
+    // The product is settled even though the date is not, so record it now
+    // rather than only after the arrival click — the thread's memory should
+    // not depend on the operator finishing the picker.
+    await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: purchased, arrivalSchedule: null });
+    return buildArrivalPickerPayload(job.id, deps.now, priorChoice);
   }
+
+  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: purchased, arrivalSchedule });
 
   const compose = deps.composeReply ?? defaultComposeReply;
   const composed = await compose(
@@ -619,8 +733,25 @@ async function finishReplyAfterInteraction(
     { env, fetch: deps.fetch, now: deps.now },
     { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText: job.raw_text },
   );
-  const finalPayload = buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
-  await updateOriginalMessage(deps, slackApiDeps, ctx, finalPayload);
+  return buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
+}
+
+/**
+ * The click path: rebuild the reply and replace the message the click came
+ * from. Behaviour is unchanged from before the split — the build half now
+ * lives in buildFinishReplyPayload so the approval resume can reuse it
+ * (issue #26).
+ */
+async function finishReplyAfterInteraction(
+  env: Env,
+  repoDeps: RepoDeps,
+  deps: SlackInteractionsDeps,
+  ctx: FinishReplyContext,
+): Promise<void> {
+  const payload = await buildFinishReplyPayload(env, repoDeps, deps, ctx);
+  if (!payload) return;
+  const slackApiDeps: SlackApiDeps = { botToken: env.SLACK_BOT_TOKEN, fetch: deps.fetch, sleep: deps.sleep };
+  await updateOriginalMessage(deps, slackApiDeps, ctx, payload);
 }
 
 /* -------------------------------------------------------------------------
