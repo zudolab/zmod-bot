@@ -103,6 +103,7 @@ function refJob(rawText: string, actorUserId = ADMIN): JobRow {
     created_at: NOW_MS,
     updated_at: NOW_MS,
     completed_at: null,
+    resolved_context: null,
   };
 }
 

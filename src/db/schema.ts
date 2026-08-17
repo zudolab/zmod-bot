@@ -69,6 +69,8 @@ export interface RefDraftRow {
   consumed_at: number | null;
   /** Which authoring action produced this draft — copied verbatim onto the product_ref_versions row on approval. See RefDraftSource. */
   source: RefDraftSource;
+  /** The job (if any) this draft's `ref new`/`ref refresh` originated from (migrations/0004_ref_drafts_origin_job.sql, epic #22 thread continuity). NULL for an explicit `@bot ref new <query>` — a legitimate state, not a defect. */
+  origin_job_id: number | null;
 }
 
 /**
@@ -110,6 +112,29 @@ export interface JobRow {
   created_at: number;
   updated_at: number;
   completed_at: number | null;
+  /** JSON-encoded ResolvedJobContext, or NULL for a job that never reached a resolved product (migrations/0006_jobs_resolved_context.sql, epic #22 thread continuity). Parse via parseResolvedJobContext (src/db/repos.ts) rather than JSON.parse directly — a malformed blob must degrade to "no memory", never throw. */
+  resolved_context: string | null;
+}
+
+/**
+ * What a reply job actually resolved to — slug, variant, arrival schedule.
+ * Written by recordResolvedContext (src/db/repos.ts) once a reply job has
+ * resolved a product, and read back by findLatestResolvedThreadJob to give
+ * a follow-up mention in the same thread its predecessor's context (epic
+ * #22 thread continuity). Kept in schema.ts, not repos.ts, since later
+ * sub-issues (#25, #26, #27) both write and read this shape.
+ */
+export interface ResolvedJobContext {
+  slug: string;
+  /**
+   * Deliberately `string | null` rather than `PurchasedVariant`
+   * (src/reply/templates.ts) — this is a persisted snapshot read back by
+   * a later sub-issue's inheritance logic, not a live resolver result,
+   * so it must not fail to parse just because a future variant label
+   * doesn't match today's closed union.
+   */
+  variant: string | null;
+  arrivalSchedule: string | null;
 }
 
 export type UsageTask = "compose" | "author" | "polish";
