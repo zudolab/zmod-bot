@@ -12,3 +12,11 @@ The customer already knows exactly what this product is — do NOT include any i
 - Connect it to OXI ONE MKII with this cable.
 
 Suggested Japanese line: OXI Pipe MKIIにはHDMIケーブルが付属しておりますので、こちらでOXI ONE MKIIと接続してお使いいただけます。
+
+## Included Cable Notice (ALWAYS include)
+
+The module ships with an HDMI cable in the box. ALWAYS append the following notice for any OXI Pipe MKII purchase.
+
+```
+OXI Pipe MKIIにはHDMIケーブルが付属しておりますので、こちらでOXI ONE MKIIと接続してお使いいただけます。
+```

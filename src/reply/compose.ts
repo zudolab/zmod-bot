@@ -170,9 +170,22 @@ export async function composeReply(
   // template". There is nothing for a model to assemble, and asking one
   // to assemble nothing can only return something the output guard then
   // rejects. No call, no `usage_log` row: nothing was spent.
-  if (prepared.resourceSection.trim() === "") {
-    log("info", "compose: reference has no resources section, skipping the provider", {
+  // What is left of the section once every required literal block is
+  // removed. Empty means there is nothing a model could contribute: the
+  // renderer already emits the literals byte-exact and the output guard
+  // would demand them back unchanged, so a call can only spend tokens and
+  // risk a paraphrase that trips the guard for no gain.
+  const composable = prepared.requiredLiterals.reduce(
+    (rest, literal) => rest.split(literal).join(""),
+    prepared.resourceSection,
+  );
+  if (composable.trim() === "") {
+    log("info", "compose: nothing to compose, skipping the provider", {
       slug: input.ref.slug,
+      // Distinguishes the two shapes in the corpus: an editorial-Notes-only
+      // reference (ai-mult, x0x-heart) from one whose whole section is a
+      // fixed notice (oxi-pipe-mk2's included-cable line).
+      literalOnly: prepared.resourceSection.trim() !== "",
     });
     return { text: fallbackText, usedFallback: false, fallback: null, provider: provider.id };
   }

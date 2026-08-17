@@ -1223,6 +1223,20 @@ exports[`the seed corpus > oxi-pipe-mk2 parses to a stable ProductRef 1`] = `
 Suggested Japanese line: OXI Pipe MKIIにはHDMIケーブルが付属しておりますので、こちらでOXI ONE MKIIと接続してお使いいただけます。",
       "resources": [],
     },
+    {
+      "gate": "always",
+      "heading": "Included Cable Notice (ALWAYS include)",
+      "literalBlocks": [
+        {
+          "rule": {
+            "kind": "always",
+          },
+          "ruleProse": "The module ships with an HDMI cable in the box. ALWAYS append the following notice for any OXI Pipe MKII purchase.",
+          "text": "OXI Pipe MKIIにはHDMIケーブルが付属しておりますので、こちらでOXI ONE MKIIと接続してお使いいただけます。",
+        },
+      ],
+      "resources": [],
+    },
   ],
   "slug": "oxi-pipe-mk2",
 }

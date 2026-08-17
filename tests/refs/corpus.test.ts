@@ -168,7 +168,7 @@ describe("the seed corpus", () => {
 
     // Every non-blank, non-fence line of the frozen corpus. Exact, so a
     // loop that silently stopped checking would fail here too.
-    expect(checked).toBe(421);
+    expect(checked).toBe(424);
   });
 });
 
