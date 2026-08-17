@@ -25,12 +25,17 @@ export type RefCategory = "general" | "general-diy" | "small";
  * The category spelling used in the markdown source, keyed by the parsed
  * value — the parse/serialize round trip and the seed importer both need
  * to go back to the on-disk wording.
+ *
+ * `as const satisfies` rather than a `Record<RefCategory, string>`
+ * annotation: these three strings ARE the values of
+ * src/db/schema.ts ProductCategory, and widening them to `string` here is
+ * what forced every caller writing one into the store to reach for a cast.
  */
-export const REF_CATEGORY_LABELS: Record<RefCategory, string> = {
+export const REF_CATEGORY_LABELS = {
   general: "general",
   "general-diy": "general (built) / diy (kit)",
   small: "small",
-};
+} as const satisfies Record<RefCategory, string>;
 
 /**
  * Whether a section applies to every purchase of the product or only to
