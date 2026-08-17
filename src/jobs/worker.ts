@@ -52,7 +52,6 @@ import { resolveProductRef, type ResolveResult } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
 import type { ProductRef } from "../refs/model";
 import {
-  buildMissingRefBlocks,
   buildMessagePayload,
   buildReplyBlocks,
   buildReplyMessagePayload,
@@ -63,6 +62,7 @@ import { postMessage, type SlackApiDeps } from "../slack/api";
 import {
   buildArrivalPickerPayload,
   buildCandidatePickerPayload,
+  buildMissingRefPayload,
   buildVariantPickerPayload,
   computeArrivalPresetOptions,
   parseCommand,
@@ -202,10 +202,10 @@ async function buildReplyJobPayload(
   deps: RunJobDeps,
 ): Promise<SlackMessagePayload> {
   if (resolved.kind === "miss") {
-    return buildMessagePayload(
-      buildMissingRefBlocks(stripMention(job.raw_text)),
-      "製品リファレンスが見つかりませんでした。",
-    );
+    // `job.id` rides along in the button's envelope so the draft the
+    // click produces records which mention asked for it (epic #22
+    // thread continuity) — see src/slack/commands.ts buildMissingRefPayload.
+    return buildMissingRefPayload({ query: stripMention(job.raw_text), originJobId: job.id });
   }
 
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);

@@ -13,6 +13,7 @@ import { normalizeAlias } from "../refs/resolve";
 import { ACTION_IDS, encodeArrivalOptionArg, encodeButtonValue } from "./commands";
 import { CREATE_REFERENCE_ACTION_ID } from "./blocks";
 import { handleSlackInteractionsWithDeps, type SlackInteractionsDeps } from "./interactions";
+import { ANTHROPIC_MESSAGES_URL } from "../llm/claude";
 import type { Env } from "../env";
 import type { FetchLike, WaitUntilFn } from "../types";
 import type { ComposeReplyInput, ComposeReplyResult } from "../reply/compose";
@@ -92,6 +93,108 @@ function createFakeFetch(): { fetch: FetchLike; calls: FakeFetchCall[] } {
     return new Response(JSON.stringify({ ok: true, channel: body?.channel, ts: "999.001" }), { status: 200 });
   }) as FetchLike;
   return { fetch: fetchImpl, calls };
+}
+
+/* -------------------------------------------------------------------------
+ * A fake site + provider for the create_reference authoring path (issue
+ * #25). Deliberately minimal next to src/refs/authoring.test.ts's — that
+ * suite owns the authoring pipeline's behaviour; this one only needs the
+ * pipeline to SUCCEED, so that the ref_drafts row it writes can be
+ * checked for the origin job the click carried.
+ * ---------------------------------------------------------------------- */
+
+const AUTHORING_SITE_BASE = "https://takazudomodular.com";
+const AUTHORING_QUERY = "zt seq";
+const AUTHORING_DETAIL_HREF = "/products/zt-seq-intro/";
+const AUTHORING_REF_SLUG = "zt-seq";
+const AUTHORING_PRODUCT_URL = `${AUTHORING_SITE_BASE}${AUTHORING_DETAIL_HREF}`;
+
+const AUTHORING_PAGE_HTML = [
+  "<html><body><h1>ZT Seq</h1>",
+  "<h2>マニュアルとガイド</h2>",
+  "<a href=/manuals/zt-seq/>ZT Seq マニュアル</a>",
+  "</body></html>",
+].join("");
+
+const AUTHORING_BODY = [
+  "# ZT Seq",
+  "",
+  "- category: general",
+  `- product-url: ${AUTHORING_PRODUCT_URL}`,
+  `- aliases: ${AUTHORING_REF_SLUG}, ZT Seq`,
+  "",
+  "## Manual",
+  "",
+  `- ZT Seq マニュアル: ${AUTHORING_SITE_BASE}/manuals/zt-seq/`,
+  "",
+  "Intro text: 英語のマニュアルを以下にて公開しています。お手元に置いてお使いいただけると幸いです。",
+  "",
+].join("\n");
+
+function authoringEnv(): Env {
+  return baseEnv({
+    SITE_API_BASE: AUTHORING_SITE_BASE,
+    AUTHOR_PROVIDER: "claude",
+    ANTHROPIC_API_KEY: "sk-ant-test",
+  });
+}
+
+/**
+ * The Slack fake of createFakeFetch, extended with the catalog/page/provider
+ * responses authoring needs.
+ *
+ * Every intercepted URL is recorded in the same `calls` array the Slack
+ * fake uses — without that, an assertion like "the provider was never
+ * called" would pass no matter what, since the array would only ever hold
+ * Slack traffic. Bodies are dropped for these: the provider's is the
+ * authoring prompt.
+ */
+function createAuthoringFetch(): { fetch: FetchLike; calls: FakeFetchCall[] } {
+  const slack = createFakeFetch();
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith(ANTHROPIC_MESSAGES_URL) || url.includes("/api/products") || url.includes("/api/search") || url.includes(AUTHORING_DETAIL_HREF)) {
+      slack.calls.push({ url, body: null });
+    }
+    if (url.startsWith(ANTHROPIC_MESSAGES_URL)) {
+      return new Response(
+        JSON.stringify({
+          model: "claude-haiku-4-5",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: AUTHORING_BODY }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/api/products")) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          products: [
+            {
+              slug: "zt-seq-black",
+              name: "ZT Seq (black)",
+              brand: "Zudo Test",
+              description: "テスト用のシーケンサーです。",
+              detailHref: AUTHORING_DETAIL_HREF,
+              tags: ["sequencer"],
+              price: 48000,
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/api/search")) {
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes(AUTHORING_DETAIL_HREF)) {
+      return new Response(AUTHORING_PAGE_HTML, { status: 200 });
+    }
+    return slack.fetch(input, init);
+  }) as FetchLike;
+  return { fetch: fetchImpl, calls: slack.calls };
 }
 
 function createFakeComposeReply(): { composeReply: (deps: unknown, input: ComposeReplyInput) => Promise<ComposeReplyResult>; calls: ComposeReplyInput[] } {
@@ -606,5 +709,164 @@ describe("handleSlackInteractionsWithDeps -- against real D1", () => {
 
     const everything = JSON.stringify(calls.map((call) => call.body));
     expect(everything, "the placeholder must be gone, not merely unreferenced").not.toContain("まだ実装されていません");
+  });
+
+  /* ----------------------------------------- create_reference origin job */
+
+  /**
+   * Issue #25. The button's value went from a bare query string to an
+   * envelope carrying the originating reply job, so the draft a click
+   * produces knows which mention asked for it (epic #22).
+   *
+   * Both value shapes are exercised here rather than only the new one:
+   * buttons rendered before this change are still sitting in channel
+   * history, and decodeButtonValue returns null for them rather than
+   * throwing, so that path has to keep working — including the receipt
+   * key, which falls back to the raw value for exactly that case.
+   */
+  async function clickCreateReference(input: {
+    value: string;
+    actionTs?: string;
+    env?: Env;
+  }): Promise<{ calls: FakeFetchCall[] }> {
+    const body = formEncodedPayload(
+      blockActionsPayload({
+        actionId: CREATE_REFERENCE_ACTION_ID,
+        value: input.value,
+        userId: "U_ADMIN",
+        ...(input.actionTs === undefined ? {} : { actionTs: input.actionTs }),
+      }),
+    );
+    const request = await makeSignedRequest(body);
+    const { fetch, calls } = createAuthoringFetch();
+    const { waitUntil, scheduled } = makeWaitUntil();
+
+    const response = await handleSlackInteractionsWithDeps(request, input.env ?? authoringEnv(), makeDeps({ db: env!.db, waitUntil, fetch }));
+    expect(response.status).toBe(200);
+    await Promise.all(scheduled);
+    return { calls };
+  }
+
+  async function draftRows(): Promise<{ slug: string; origin_job_id: number | null }[]> {
+    const result = await env!.db.prepare("SELECT slug, origin_job_id FROM ref_drafts ORDER BY rowid").all<{
+      slug: string;
+      origin_job_id: number | null;
+    }>();
+    return result.results ?? [];
+  }
+
+  it("an envelope-valued create_reference click drafts with the originating job recorded", async () => {
+    await setup();
+    const jobId = await seedReplyJob("ev-origin-1", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+
+    await clickCreateReference({ value: encodeButtonValue({ v: 1, id: String(jobId), a: AUTHORING_QUERY }) });
+
+    expect(await draftRows()).toEqual([{ slug: AUTHORING_REF_SLUG, origin_job_id: jobId }]);
+  });
+
+  it("a legacy plain-string button still authors, with no origin to record", async () => {
+    await setup();
+    await seedReplyJob("ev-origin-legacy", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+
+    await clickCreateReference({ value: AUTHORING_QUERY });
+
+    expect(await draftRows()).toEqual([{ slug: AUTHORING_REF_SLUG, origin_job_id: null }]);
+  });
+
+  it("recovers the query from the envelope's `a`, not from the raw JSON value", async () => {
+    await setup();
+    const jobId = await seedReplyJob("ev-origin-query", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+
+    const { calls } = await clickCreateReference({
+      value: encodeButtonValue({ v: 1, id: String(jobId), a: AUTHORING_QUERY }),
+    });
+
+    const interim = calls.find((call) => call.url.endsWith("/chat.postEphemeral"));
+    expect(JSON.stringify(interim?.body)).toContain(`「${AUTHORING_QUERY}」`);
+    expect(JSON.stringify(interim?.body)).not.toContain('\\"v\\":1');
+  });
+
+  /* --------- the four pinned idempotency cases (issue #25) */
+
+  it("the same origin clicked twice at the same action_ts drafts exactly once", async () => {
+    await setup();
+    const jobId = await seedReplyJob("ev-origin-dedupe", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+    const value = encodeButtonValue({ v: 1, id: String(jobId), a: AUTHORING_QUERY });
+
+    await clickCreateReference({ value, actionTs: "1000.000009" });
+    await clickCreateReference({ value, actionTs: "1000.000009" });
+
+    expect(await draftRows()).toHaveLength(1);
+  });
+
+  /**
+   * The case the old plain-string value could not express: two mentions
+   * that missed on the SAME text are two independent offers, and Slack
+   * gives no guarantee their `action_ts` differ. Keyed on the query alone
+   * the second click was swallowed as a duplicate and the operator got
+   * nothing at all.
+   */
+  it("two different origins clicked at the same action_ts do not collide", async () => {
+    await setup();
+    const firstJob = await seedReplyJob("ev-origin-a", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+    const secondJob = await seedReplyJob("ev-origin-b", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+    expect(secondJob).not.toBe(firstJob);
+
+    await clickCreateReference({
+      value: encodeButtonValue({ v: 1, id: String(firstJob), a: AUTHORING_QUERY }),
+      actionTs: "1000.000009",
+    });
+    await clickCreateReference({
+      value: encodeButtonValue({ v: 1, id: String(secondJob), a: AUTHORING_QUERY }),
+      actionTs: "1000.000009",
+    });
+
+    expect((await draftRows()).map((row) => row.origin_job_id)).toEqual([firstJob, secondJob]);
+  });
+
+  it("a legacy plain-string click still dedupes on its raw value at the same action_ts", async () => {
+    await setup();
+    await seedReplyJob("ev-origin-legacy-dedupe", `<@${BOT_USER_ID}> ${AUTHORING_QUERY}`);
+
+    await clickCreateReference({ value: AUTHORING_QUERY, actionTs: "1000.000009" });
+    await clickCreateReference({ value: AUTHORING_QUERY, actionTs: "1000.000009" });
+
+    expect(await draftRows()).toHaveLength(1);
+  });
+
+  /**
+   * The other half of the fallback contract: two legacy buttons offering
+   * DIFFERENT queries are different targets, and the raw value is the
+   * only thing that can tell them apart. Asserted on the receipt keys
+   * rather than on drafts, so it holds regardless of whether either query
+   * happens to resolve to a product.
+   */
+  it("two legacy plain-string clicks with different queries do not collide at the same action_ts", async () => {
+    await setup();
+
+    await clickCreateReference({ value: "one product", actionTs: "1000.000009" });
+    await clickCreateReference({ value: "another product", actionTs: "1000.000009" });
+
+    const receipts = await env!.db
+      .prepare("SELECT event_id FROM slack_event_receipts WHERE event_id LIKE ? ORDER BY event_id")
+      .bind(`interaction:${CREATE_REFERENCE_ACTION_ID}:%`)
+      .all<{ event_id: string }>();
+    expect(receipts.results?.map((row) => row.event_id)).toEqual([
+      `interaction:${CREATE_REFERENCE_ACTION_ID}:another product:1000.000009`,
+      `interaction:${CREATE_REFERENCE_ACTION_ID}:one product:1000.000009`,
+    ]);
+  });
+
+  it("an envelope whose id is not a job number refuses instead of drafting against a bogus origin", async () => {
+    await setup();
+
+    const { calls } = await clickCreateReference({ value: encodeButtonValue({ v: 1, id: "not-a-job", a: AUTHORING_QUERY }) });
+
+    expect(await draftRows()).toEqual([]);
+    const ephemeral = calls.filter((call) => call.url.endsWith("/chat.postEphemeral"));
+    expect(ephemeral).toHaveLength(1);
+    expect(JSON.stringify(ephemeral[0]?.body)).toContain("読み取れませんでした");
+    // Nothing was authored, so the provider was never called either.
+    expect(calls.some((call) => call.url.startsWith(ANTHROPIC_MESSAGES_URL))).toBe(false);
   });
 });

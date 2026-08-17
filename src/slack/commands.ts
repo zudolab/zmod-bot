@@ -18,6 +18,7 @@ import { parseCommaSeparated } from "../env";
 import {
   buildArrivalDateBlocks,
   buildMessagePayload,
+  buildMissingRefBlocks,
   escapeMrkdwn,
   type SlackMessagePayload,
 } from "./blocks";
@@ -268,10 +269,10 @@ export function decodeArrivalOptionArg(
  * ---------------------------------------------------------------------- */
 
 /**
- * Slack rejects a button `value` over 2000 chars (invalid_blocks) — the
- * same ceiling src/slack/blocks.ts's (non-exported) MAX_BUTTON_VALUE_CHARS
- * enforces for the missing-ref flow; restated here per that file's own
- * precedent of not sharing the literal across files.
+ * Slack rejects a button `value` over 2000 chars (invalid_blocks). Every
+ * button this repo renders — the pickers below and, since issue #25, the
+ * missing-ref "create a reference" button — goes through encodeButtonValue,
+ * so this is the single place the ceiling is enforced.
  */
 export const MAX_BUTTON_VALUE_CHARS = 2_000;
 
@@ -280,11 +281,17 @@ export interface ButtonValueEnvelope {
   /**
    * Opaque id the click needs to recover its context — a `jobs.id`
    * (stringified) for arrival_pick/arrival_other/variant_pick/
-   * candidate_pick, or a `ref_drafts.id` (uuid) for ref_approve/
-   * ref_reject. Never the reference body or reply text itself.
+   * candidate_pick and (since issue #25) create_reference, or a
+   * `ref_drafts.id` (uuid) for ref_approve/ref_reject. Never the
+   * reference body or reply text itself.
+   *
+   * src/slack/interactions.ts also keys its interaction receipt on this,
+   * so it must identify what the click acts *on*: two create_reference
+   * buttons offered by two different reply jobs are two different targets
+   * even if Slack hands them the same `action_ts`.
    */
   id: string;
-  /** Action-specific argument, e.g. an encoded arrival option, a chosen candidate slug, or "built"/"kit". */
+  /** Action-specific argument, e.g. an encoded arrival option, a chosen candidate slug, "built"/"kit", or create_reference's search query. */
   a?: string;
   /**
    * A disambiguation choice carried forward into a chained arrival-date
@@ -458,4 +465,47 @@ export function buildCandidatePickerPayload(jobId: number, candidateSlugs: reado
     })),
   });
   return buildMessagePayload([promptBlock, ...pickerBlocks], "複数の製品候補があります。該当するものを選択してください。");
+}
+
+export interface MissingRefPayloadInput {
+  /** The search text the resolver failed on — shown in the message and carried back on the click as the authoring query. */
+  query: string;
+  /** The `reply` job whose resolution missed. Recorded as `ref_drafts.origin_job_id` when the button is clicked (epic #22). */
+  originJobId: number;
+}
+
+/**
+ * Fits `query` into a create_reference envelope that respects Slack's
+ * 2000-char `value` cap.
+ *
+ * The id is the load-bearing half — it is what the resulting draft records
+ * as `origin_job_id` and what src/slack/interactions.ts keys its receipt
+ * on — so the **query** is what gets truncated when the two cannot both
+ * fit, never the other way round (issue #25). The loop measures the
+ * *encoded* length rather than subtracting a fixed overhead because JSON
+ * escaping can cost more than one character per source character (a quote
+ * becomes two, a lone surrogate six).
+ */
+function fitMissingRefEnvelope(input: MissingRefPayloadInput): ButtonValueEnvelope {
+  const id = String(input.originJobId);
+  let query = input.query;
+  for (;;) {
+    const envelope: ButtonValueEnvelope = { v: 1, id, a: query };
+    const overflow = JSON.stringify(envelope).length - MAX_BUTTON_VALUE_CHARS;
+    if (overflow <= 0 || query === "") return envelope;
+    query = query.slice(0, Math.max(0, query.length - overflow));
+  }
+}
+
+/**
+ * Builds the "no reference found" message for a `reply` job whose
+ * resolution missed (epic issue #1 decision 7: a miss does not dead-end).
+ *
+ * Lives here rather than in src/slack/blocks.ts for the same reason the
+ * pickers above do: the button carries a `ButtonValueEnvelope`, and this
+ * module owns that protocol.
+ */
+export function buildMissingRefPayload(input: MissingRefPayloadInput): SlackMessagePayload {
+  const value = encodeButtonValue(fitMissingRefEnvelope(input));
+  return buildMessagePayload(buildMissingRefBlocks(input.query, value), "製品リファレンスが見つかりませんでした。");
 }

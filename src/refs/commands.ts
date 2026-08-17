@@ -618,6 +618,21 @@ export interface RefCommandOptions {
   dailyCap?: number;
 }
 
+export interface AuthoredRefPayloadOptions extends RefCommandOptions {
+  /**
+   * The `reply` job whose `miss` offered the create_reference button this
+   * authoring run came from — recorded as `ref_drafts.origin_job_id`
+   * (epic #22 thread continuity).
+   *
+   * Deliberately NOT on RefCommandOptions: buildRefCommandPayload forwards
+   * that object straight through, so widening it would let an explicit
+   * `@bot ref new <query>` inherit an origin it does not have. The
+   * implicit button path (src/slack/interactions.ts) is the only caller
+   * that sets this.
+   */
+  originJobId?: number | null;
+}
+
 /** Bound so a `fetch` implementation that requires its own receiver keeps it. */
 const defaultFetch: FetchLike = (...args) => fetch(...args);
 
@@ -637,7 +652,7 @@ export async function buildAuthoredRefPayload(
   deps: RepoDeps,
   input: AuthorRefInput,
   actorUserId: string,
-  options: RefCommandOptions = {},
+  options: AuthoredRefPayloadOptions = {},
 ): Promise<SlackMessagePayload> {
   const outcome = await authorProductRef(
     {
@@ -681,6 +696,9 @@ export async function buildAuthoredRefPayload(
     baseVersion: outcome.baseVersion,
     createdByUserId: actorUserId,
     expiresAt: deps.now().getTime() + REF_DRAFT_TTL_MS,
+    // NULL for an explicit `@bot ref new` / `ref refresh`; set only when
+    // this came from a miss reply's create_reference button (epic #22).
+    originJobId: options.originJobId ?? null,
   });
 
   return buildRefDraftPreviewPayload({
