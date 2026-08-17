@@ -539,7 +539,10 @@ function authoringCaveats(outcome: Extract<AuthorRefOutcome, { kind: "drafted" }
       "リンクの拾い漏れがありえます。リンク先と本文を確認してから承認してください。",
   ];
 
-  for (const note of report.degraded) notes.push(`※ ${note}`);
+  // Escaped even though the sentence is ours: the URL inside it came from
+  // the catalog's detailHref, and an unescaped `&`/`<`/`>` in a mrkdwn
+  // section is a rendering bug, not a display detail.
+  for (const note of report.degraded) notes.push(`※ ${escapeMrkdwn(note)}`);
   if (report.contentTruncated) {
     notes.push("※ 取得したページが長かったため、行単位で切り詰めて読み込んでいます。");
   }
@@ -575,7 +578,7 @@ function authoringHeadline(outcome: Extract<AuthorRefOutcome, { kind: "drafted" 
 function authoringProblemPayload(outcome: Exclude<AuthorRefOutcome, { kind: "drafted" }>): SlackMessagePayload {
   switch (outcome.kind) {
     case "no-product": {
-      const degraded = outcome.degraded.map((note) => `\n※ ${note}`).join("");
+      const degraded = outcome.degraded.map((note) => `\n※ ${escapeMrkdwn(note)}`).join("");
       return textPayload(
         `「${escapeMrkdwn(outcome.query)}」に該当する製品ページがサイトのカタログに見つかりませんでした。` +
           `製品ページのない製品のリファレンスは作成できません。製品名を変えてもう一度試してください。${degraded}`,

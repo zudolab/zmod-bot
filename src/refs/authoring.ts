@@ -888,7 +888,7 @@ export async function authorProductRef(deps: AuthorRefDeps, input: AuthorRefInpu
       // A refresh may only add, so everything the existing document
       // already links has to stay legal even if the site stopped
       // advertising it.
-      ...(existingRef === null ? [] : extractUrls(input.mode === "refresh" ? input.existing.body_md : "")),
+      ...(input.mode === "refresh" ? extractUrls(input.existing.body_md) : []),
     ]),
   ];
 
