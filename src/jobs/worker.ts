@@ -47,15 +47,14 @@
 import type { Env } from "../env";
 import {
   claimJobs,
-  findLatestResolvedThreadJob,
   getProductRefBySlug,
-  parseResolvedJobContext,
   recordResolvedContext,
   updateJobState,
   type RepoDeps,
 } from "../db/repos";
 import { errorSnippet, log } from "../ops/log";
-import type { JobRow, JobState, ResolvedJobContext } from "../db/schema";
+import type { JobRow, JobState } from "../db/schema";
+import { findInheritableThreadContext, type InheritedThreadContext } from "./thread-context";
 import { resolveProductRef } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
 import type { ProductRef } from "../refs/model";
@@ -221,39 +220,6 @@ function buildUnknownCommandPayload(reason: string): SlackMessagePayload {
 }
 
 /**
- * What a `reply_modifiers` mention inherits from its thread (issue #27):
- * the most recent prior `reply` job in the same `(channel_id,
- * thread_ts)` that recorded a resolved product, plus that job's raw text.
- *
- * Returns null — meaning "no memory, degrade to today's behaviour" — for
- * every miss: no prior job at all (a first mention, a top-level mention,
- * a different thread or channel, or a thread whose jobs aged out of the
- * 7-day `done` retention, see src/jobs/retention.ts), and a prior job
- * whose stored blob is malformed (parseResolvedJobContext returns null
- * rather than throwing, by design).
- *
- * `findLatestResolvedThreadJob` supplies the isolation guarantees this
- * path depends on: it filters on channel *and* thread, excludes the
- * calling job and everything after it (so a job never inherits from
- * itself), and restricts to `kind = 'reply'` (so a `polish`/`ref` job in
- * the thread is never mistaken for reply context).
- */
-async function findInheritableThreadContext(
-  repoDeps: RepoDeps,
-  job: JobRow,
-): Promise<{ context: ResolvedJobContext; priorRawText: string } | null> {
-  const prior = await findLatestResolvedThreadJob(repoDeps, {
-    channelId: job.channel_id,
-    threadTs: job.thread_ts,
-    beforeJobId: job.id,
-  });
-  if (prior === null) return null;
-  const context = parseResolvedJobContext(prior.resolved_context);
-  if (context === null) return null;
-  return { context, priorRawText: prior.raw_text };
-}
-
-/**
  * Finishes a `reply` job whose product is decided — whether the mention
  * named it or the thread supplied it — and records what it resolved to
  * so a later mention in the thread can inherit it (issue #27).
@@ -278,7 +244,7 @@ async function finishResolvedReply(
   ref: ProductRef,
   variant: "built" | "kit" | null,
   modifiers: ReplyModifiers,
-  inherited: { arrivalSchedule: string | null; variantText: string } | null,
+  inherited: InheritedThreadContext | null,
   deps: RunJobDeps,
 ): Promise<SlackMessagePayload> {
   // Flags never accumulate across turns (issue #27) — `modifiers` comes
@@ -288,18 +254,18 @@ async function finishResolvedReply(
   const arrivalSchedule =
     ref.category === "small"
       ? null
-      : (arrivalScheduleFromPreset(modifiers.arrival, deps.now) ?? inherited?.arrivalSchedule ?? null);
-
-  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant, arrivalSchedule });
+      : (arrivalScheduleFromPreset(modifiers.arrival, deps.now) ?? inherited?.context.arrivalSchedule ?? null);
 
   // The text that gates `variant-match` literal blocks (e.g. zudo-rail's
-  // Lite renewal notice) is the text that named the product — this
-  // mention normally, or the inherited turn's when this one is
-  // modifier-only. ResolvedJobContext carries slug/variant/arrival and
-  // not this text, so a chain of three-plus modifier-only turns stops
-  // seeing it once the anchor moves off the naming turn; #29 owns
-  // whether that is worth widening the stored shape for.
+  // Lite renewal notice) is the text that *named* the product — this
+  // mention normally, or, when this one is modifier-only, whatever the
+  // thread is still carrying from the naming turn. Recording it (rather
+  // than letting the next turn re-read the prior job's raw_text) is what
+  // keeps the notice alive past turn 2 of a chain: turn 3's predecessor
+  // is `@bot --discord`, whose text contains no needle at all.
   const variantText = inherited?.variantText ?? job.raw_text;
+
+  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant, arrivalSchedule, variantText });
 
   return composeMatchPayload(env, job.id, ref, variant ?? "built", variantText, modifiers, deps, arrivalSchedule);
 }
@@ -351,16 +317,18 @@ async function buildReplyJobPayload(
     // ResolvedJobContext.variant is `string | null` on purpose (a
     // persisted snapshot, not a live resolver result), so narrow it to
     // today's closed union rather than trusting the stored value.
-    const { variant: storedVariant, arrivalSchedule } = inheritable.context;
+    const storedVariant = inheritable.context.variant;
     const variant = storedVariant === "built" || storedVariant === "kit" ? storedVariant : null;
     if (ref.category === "general-diy" && variant === null) {
       // Inherited a general-diy product whose built/kit choice was never
       // decided. Ask, never default — shipping a built reply for a kit
       // purchase sends the customer the wrong links (src/refs/resolve.ts).
+      // Nothing is recorded for this job: asking is not resolving, and the
+      // click that answers re-reads the thread (src/jobs/thread-context.ts
+      // findClickTimeThreadContext).
       return buildVariantPickerPayload(job.id, ref.displayName);
     }
-    const inherited = { arrivalSchedule, variantText: inheritable.priorRawText };
-    return finishResolvedReply(env, repoDeps, job, ref, variant, parsed, inherited, deps);
+    return finishResolvedReply(env, repoDeps, job, ref, variant, parsed, inheritable, deps);
   }
 
   if (parsed.kind !== "reply") {
