@@ -42,6 +42,7 @@ import {
   isAdminUser,
   parseCommand,
   buildArrivalPickerPayload,
+  buildVariantPickerPayload,
   type ButtonValueEnvelope,
 } from "./commands";
 import {
@@ -675,7 +676,16 @@ async function buildFinishReplyPayload(
   }
 
   let refRow: ProductRefRow | null = null;
-  let purchased: "built" | "kit" = "built";
+  /**
+   * The *determined* built/kit choice, or null for "never decided" —
+   * deliberately not defaulted to "built" here, because this is what gets
+   * persisted as ResolvedJobContext.variant and a later turn in the thread
+   * must be able to tell the two apart (see that field's doc comment).
+   * Only the compose call below falls back to "built".
+   */
+  let decidedVariant: "built" | "kit" | null = null;
+  /** A general-diy product whose variant this path has not decided — ask rather than guess. */
+  let variantUndecided = false;
   // Defaults to this job's own text, and is replaced by the thread's when
   // the mention named no product — see ResolvedJobContext.variantText.
   let variantText = job.raw_text;
@@ -685,8 +695,10 @@ async function buildFinishReplyPayload(
     refRow = await getProductRefBySlug(repoDeps, ctx.candidateSlugOverride);
     // The chosen candidate could itself be a general-diy product with an
     // as-yet-undetermined variant, but there is no second round of
-    // disambiguation here — defaults to "built", same as
+    // disambiguation here — compose falls back to "built", same as
     // src/jobs/worker.ts composeMatchPayload's `resolved.variant ?? "built"`.
+    // What is *recorded* stays null, so the next turn in the thread asks
+    // instead of inheriting a guess.
   } else if (parsed.kind === "reply_modifiers") {
     // A modifier-only mention names no product, so re-resolving its
     // raw_text would resolve nothing. The product came from the thread —
@@ -696,7 +708,7 @@ async function buildFinishReplyPayload(
     if (inherited) {
       refRow = await getProductRefBySlug(repoDeps, inherited.context.slug);
       const storedVariant = inherited.context.variant;
-      if (storedVariant === "built" || storedVariant === "kit") purchased = storedVariant;
+      if (storedVariant === "built" || storedVariant === "kit") decidedVariant = storedVariant;
       variantText = inherited.variantText;
       inheritedArrival = inherited.context.arrivalSchedule;
     }
@@ -704,18 +716,36 @@ async function buildFinishReplyPayload(
     const resolved = await resolveProductRef(repoDeps, job.raw_text);
     if (resolved.kind === "match") {
       refRow = resolved.ref;
-      purchased = resolved.variant ?? "built";
+      decidedVariant = resolved.variant ?? null;
     } else if (resolved.kind === "variant-ambiguous") {
       refRow = resolved.ref;
+      // Nothing has decided built vs kit. Reachable from a *click* only in
+      // theory (a variant-ambiguous job posts the variant picker first, and
+      // that click supplies ctx.variantOverride below), but resumeOriginReply
+      // reaches it for real: a just-authored reference is frequently
+      // general-diy, and defaulting to "built" there would send the customer
+      // the wrong links (src/refs/resolve.ts).
+      variantUndecided = true;
     }
   }
-  if (ctx.variantOverride) purchased = ctx.variantOverride;
+  if (ctx.variantOverride) {
+    decidedVariant = ctx.variantOverride;
+    variantUndecided = false;
+  }
   if (!refRow) {
     log("warn", "interactions: could not re-resolve product for click", { jobId: ctx.jobId });
     return null;
   }
 
   const ref = parseProductRefMarkdown({ slug: refRow.slug, markdown: refRow.body_md });
+
+  if (variantUndecided) {
+    // Ask, never guess — and record nothing: asking is not resolving, the
+    // same rule src/jobs/worker.ts applies to its own variant-picker branch.
+    return buildVariantPickerPayload(job.id, ref.displayName);
+  }
+
+  const purchased: "built" | "kit" = decidedVariant ?? "built";
 
   let arrivalSchedule = ctx.arrivalSchedule;
   if (arrivalSchedule === null && parsed.arrival !== null) {
@@ -757,14 +787,14 @@ async function buildFinishReplyPayload(
     // not depend on the operator finishing the picker.
     await recordResolvedContext(repoDeps, job.id, {
       slug: ref.slug,
-      variant: purchased,
+      variant: decidedVariant,
       arrivalSchedule: null,
       variantText,
     });
     return buildArrivalPickerPayload(job.id, deps.now, priorChoice);
   }
 
-  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: purchased, arrivalSchedule, variantText });
+  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant: decidedVariant, arrivalSchedule, variantText });
 
   const compose = deps.composeReply ?? defaultComposeReply;
   const composed = await compose(

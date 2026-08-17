@@ -191,10 +191,17 @@ describe("resuming the original reply after an approval", () => {
     return job.id;
   }
 
-  function seedDraft(input: { slug: string; bodyMd: string; originJobId: number | null; baseVersion?: number | null; expiresAt?: number }) {
+  function seedDraft(input: {
+    slug: string;
+    bodyMd: string;
+    originJobId: number | null;
+    category?: "general" | "general (built) / diy (kit)" | "small";
+    baseVersion?: number | null;
+    expiresAt?: number;
+  }) {
     return createRefDraft(deps, {
       slug: input.slug,
-      category: "general",
+      category: input.category ?? "general",
       productUrl: null,
       bodyMd: input.bodyMd,
       baseVersion: input.baseVersion === undefined ? null : input.baseVersion,
@@ -293,6 +300,37 @@ describe("resuming the original reply after an approval", () => {
       .map((element) => element.value)
       .find((value): value is string => typeof value === "string");
     expect(decodeButtonValue(buttonValue ?? "")?.id).toBe(String(jobId));
+  });
+
+  it("posts the VARIANT PICKER, never a built reply, when the authored reference is general-diy and nothing decided built vs kit", async () => {
+    await setup();
+    const jobId = await seedOriginJob("ev-resume-variant-ask", `<@${BOT_USER_ID}> ${VARIANT_ALIAS}`);
+    const draft = await seedDraft({
+      slug: VARIANT_SLUG,
+      bodyMd: VARIANT_BODY,
+      category: "general (built) / diy (kit)",
+      originJobId: jobId,
+    });
+    const { fetch, calls } = createFakeFetch();
+    const { composeReply, calls: composeCalls } = createFakeComposeReply();
+
+    await click({ actionId: ACTION_IDS.refApprove, value: approveValue(draft.id), fetch, composeReply });
+
+    // Defaulting to "built" here would send a kit buyer the wrong links —
+    // the resume must ask, exactly as a fresh mention of the same product
+    // would (src/jobs/worker.ts posts the variant picker for
+    // `variant-ambiguous`).
+    expect(composeCalls).toHaveLength(0);
+
+    const posts = postCalls(calls);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.body?.channel).toBe(ORIGIN_CHANNEL);
+    expect(posts[0]?.body?.thread_ts).toBe(ORIGIN_THREAD);
+    expect(JSON.stringify(posts[0]?.body?.blocks)).toContain(ACTION_IDS.variantPick);
+
+    // Asking is not resolving: nothing may be recorded for the thread to
+    // inherit, or the next turn would inherit a variant nobody chose.
+    expect((await getJobById(deps, jobId))?.resolved_context).toBeNull();
   });
 
   it("posts no reply when the approved draft has no origin job, and does not error", async () => {
@@ -492,7 +530,12 @@ describe("recording resolved context from a disambiguation click", () => {
     const context = parseResolvedJobContext((await getJobById(deps, jobId))?.resolved_context ?? null);
     expect(context).toEqual({
       slug: GENERAL_SLUG,
-      variant: "built",
+      // `general` has no built/kit axis, so nothing *decided* a variant —
+      // recorded as null, not compose's "built" fallback, exactly as
+      // src/jobs/worker.ts finishResolvedReply records it for the same
+      // mention (ResolvedJobContext.variant: "never decided" must stay
+      // distinguishable from "known to be built").
+      variant: null,
       arrivalSchedule: "明後日月曜（8/18）到着予定になります。",
       // This mention named the product, so its own text is what gates
       // `variant-match` literal blocks for it and for anything inheriting
