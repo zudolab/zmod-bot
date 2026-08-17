@@ -1,0 +1,80 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zmod-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Enables the *.workers.dev per-deploy URL. This bot has no static
+  // frontend and no plan to move behind a custom domain, but the default
+  // tracks workers_dev implicitly, so state it explicitly rather than
+  // rely on that.
+  "workers_dev": true,
+
+  // ---------------------------------------------------------------------
+  // Bindings
+  // ---------------------------------------------------------------------
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zmod-bot",
+      // Placeholder — the operator creates the real D1 database
+      // (`wrangler d1 create zmod-bot`) and pastes its id here. See #18
+      // for the ops runbook.
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+    // Deliberately no `gateway: { id }` here — an unprovisioned named AI
+    // Gateway returns Cloudflare error 2001 on every call. See CLAUDE.md
+    // non-negotiable.
+  },
+
+  // Delivery-worker sweep, every 5 minutes. This is the durable contract
+  // behind every reply — see CLAUDE.md "durable intent before the ack":
+  // immediate delivery via ctx.waitUntil is only an optimization.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
+  // Names only, no values — lets `wrangler types` resolve the Env shape
+  // in CI with no `.dev.vars` present. Real values: `wrangler secret put
+  // <NAME>`, never committed. See .dev.vars.example for local dev.
+  "secrets": {
+    "required": ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "ANTHROPIC_API_KEY"]
+  },
+
+  "vars": {
+    // Slack workspace/channel ids below are operator-set, non-secret
+    // configuration — left blank here, filled in at deploy time (or via
+    // `wrangler dev --var NAME:value` locally). See #18 ops runbook.
+    //
+    // Rejects self-authored events, so the bot never replies to itself.
+    "SLACK_BOT_USER_ID": "",
+    // Comma-separated Slack channel ids the bot is allowed to act in.
+    "SLACK_ALLOWED_CHANNEL_IDS": "",
+    // Comma-separated Slack user ids allowed to run `ref new/refresh/
+    // restore` or click an approval button. See CLAUDE.md "writes are
+    // gated".
+    "SLACK_ADMIN_USER_IDS": "",
+
+    // Two providers behind one ReplyComposer interface (see epic issue
+    // #1's provider table) — task frequency decides which is the
+    // default:
+    //   compose (every reply, assemble an existing ref's section)  -> Workers AI
+    //   author  (rare — write a brand-new ref from scratch)        -> Claude
+    //   polish  (occasional — reflow arbitrary pasted JA)          -> Workers AI
+    "COMPOSE_PROVIDER": "workers-ai",
+    "AUTHOR_PROVIDER": "claude",
+    "POLISH_PROVIDER": "workers-ai",
+
+    // Anthropic model id for the Claude adapter. Left blank on purpose:
+    // blank falls back to src/llm/claude.ts DEFAULT_CLAUDE_MODEL
+    // (claude-haiku-4-5), so the default lives in exactly one place. Set
+    // it to raise the tier (e.g. "claude-sonnet-5") without a code change.
+    "CLAUDE_MODEL": "",
+
+    "SITE_API_BASE": "https://takazudomodular.com"
+  }
+}

@@ -6,3 +6,4 @@ dist/
 worker-configuration.d.ts
 .DS_Store
 *.log
+worktrees/

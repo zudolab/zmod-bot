@@ -1,0 +1,55 @@
+# PR gate: typecheck + the full test suite on every pull request.
+#
+# deploy.yml runs the same two steps before it touches production, so this
+# workflow is not what protects the Worker — it is what stops a red branch
+# from reaching a reviewer, and gives a PR a signal without waiting for a
+# merge to main to discover the failure.
+#
+# Kept deliberately identical to deploy.yml's setup (same pinned actions,
+# same Node 24 for URLPattern, same frozen lockfile) so a green PR means
+# the same thing a green deploy does.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - base/reply-bot
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          # 24, not 22: src/router.ts uses URLPattern, a global only from
+          # Node 24 (workerd has it natively). Same constraint as deploy.yml.
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
