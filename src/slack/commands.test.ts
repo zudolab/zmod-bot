@@ -203,9 +203,52 @@ describe("parseCommand", () => {
     });
   });
 
-  it("flags/arrival-only input with no product name is unknown", () => {
-    expect(parseCommand(`<@${BOT}> --discord`, BOT).kind).toBe("unknown");
-    expect(parseCommand(`<@${BOT}> 明日`, BOT).kind).toBe("unknown");
+  /**
+   * Issue #27's carve-out: modifier-only input is no longer `unknown` —
+   * it is its own `reply_modifiers` kind, so src/jobs/worker.ts can offer
+   * it the thread's remembered product. The parser stays pure and says
+   * nothing about inheritance; it only reports "modifiers, no product".
+   */
+  it("flags/arrival-only input with no product name parses as reply_modifiers, carrying the modifiers", () => {
+    expect(parseCommand(`<@${BOT}> --discord`, BOT)).toEqual({
+      kind: "reply_modifiers",
+      discord: true,
+      direct: false,
+      arrival: null,
+    });
+    expect(parseCommand(`<@${BOT}> 明日`, BOT)).toEqual({
+      kind: "reply_modifiers",
+      discord: false,
+      direct: false,
+      arrival: "tomorrow",
+    });
+    expect(parseCommand(`<@${BOT}> --direct --discord 明後日`, BOT)).toEqual({
+      kind: "reply_modifiers",
+      discord: true,
+      direct: true,
+      arrival: "day_after_tomorrow",
+    });
+  });
+
+  it("the carve-out is narrow: bad input with no product name is still unknown", () => {
+    // An unknown flag, an empty mention, and contradictory arrival
+    // presets must not be smuggled into reply_modifiers — each one is a
+    // typo the operator needs told about, not a follow-up to inherit.
+    expect(parseCommand(`<@${BOT}> --bogus`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}> --discord --bogus`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}>`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}>    `, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}> 明日 明後日`, BOT).kind).toBe("unknown");
+  });
+
+  it("a product name alongside modifiers is still a plain reply, never reply_modifiers", () => {
+    expect(parseCommand(`<@${BOT}> foo --discord 明日`, BOT)).toEqual({
+      kind: "reply",
+      query: "foo",
+      discord: true,
+      direct: false,
+      arrival: "tomorrow",
+    });
   });
 });
 
