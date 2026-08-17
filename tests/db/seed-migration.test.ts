@@ -72,7 +72,13 @@ describe("migrations/0002_seed_product_refs.sql", () => {
 
     expect(result.results.map((row) => row.slug)).toEqual(refs.map((ref) => ref.slug));
 
-    const labelToKey = new Map(Object.entries(REF_CATEGORY_LABELS).map(([key, label]) => [label, key]));
+    // Explicit <string, string>: REF_CATEGORY_LABELS' values are literal
+    // types, which would otherwise narrow this map's KEY type to those
+    // three literals — and the label being looked up comes from a D1 row,
+    // i.e. a plain string, which is exactly the lookup this test is for.
+    const labelToKey = new Map<string, string>(
+      Object.entries(REF_CATEGORY_LABELS).map(([key, label]) => [label, key]),
+    );
     const counts: Record<string, number> = { general: 0, "general-diy": 0, small: 0 };
     for (const row of result.results) {
       const key = labelToKey.get(row.category);

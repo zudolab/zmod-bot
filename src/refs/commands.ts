@@ -42,6 +42,7 @@ import {
   type RepoDeps,
 } from "../db/repos";
 import type { JobRow, ProductCategory, ProductRefRow, ProductRefVersionRow, RefDraftRow } from "../db/schema";
+import { authorProductRef, type AuthorRefInput, type AuthorRefOutcome } from "./authoring";
 import { RefParseError, type ProductRef, type RefCategory } from "./model";
 import { parseProductRefMarkdown } from "./parse";
 import { normalizeAlias, resolveProductRef } from "./resolve";
@@ -54,6 +55,7 @@ import {
   type SlackMessagePayload,
 } from "../slack/blocks";
 import { ACTION_IDS, encodeButtonValue, isAdminUser, parseCommand, USAGE_TEXT } from "../slack/commands";
+import type { FetchLike } from "../types";
 
 /**
  * How long a preview stays approvable (issue #15). Long enough for a
@@ -84,12 +86,12 @@ export function formatJstTimestamp(epochMs: number): string {
 
 /**
  * The parser's RefCategory to the spelling stored in
- * `product_refs.category`. REF_CATEGORY_LABELS (src/refs/model.ts) holds
- * the same three strings but is typed `Record<RefCategory, string>`, so
- * it cannot satisfy ProductCategory without a cast — and a cast is
- * exactly what must not sit on the value being written into the store.
- * The two are pinned together by a drift test instead
- * (src/refs/commands.test.ts).
+ * `product_refs.category`. Named separately from REF_CATEGORY_LABELS
+ * (src/refs/model.ts) because this one is checked against
+ * ProductCategory, i.e. against the column's DDL enum, rather than
+ * against the markdown source's wording — the two are the same three
+ * strings for the same reason, not by coincidence, and a drift test pins
+ * them together (src/refs/commands.test.ts).
  */
 export const DB_CATEGORY_BY_REF_CATEGORY = {
   general: "general",
@@ -268,7 +270,7 @@ export function buildRefHistoryPayload(slug: string, versions: readonly ProductR
 
 /* -------------------------------------------------------------------------
  * The draft preview — the single approval surface for every reference
- * write (ref restore here, ref new / ref refresh in issue #17).
+ * write — `ref restore`, `ref new` and `ref refresh` alike.
  * ---------------------------------------------------------------------- */
 
 export interface RefDraftPreviewInput {
@@ -514,6 +516,183 @@ async function buildRestorePayload(
 }
 
 /* -------------------------------------------------------------------------
+ * ref new / ref refresh — the LLM-authored half (issue #17).
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Sources src/refs/authoring.ts could not read, plus the coverage caveat
+ * that is true of EVERY candidate — stated on every preview, not only
+ * degraded ones.
+ *
+ * The site exposes no manuals-per-product and no guide-series-per-product
+ * endpoint (issue #17): both are server-rendered into the product page
+ * only, so the resource list is assembled from `/api/products`,
+ * `/api/search` and whatever links that page happened to carry. Coverage
+ * is therefore imperfect BY CONSTRUCTION, and the human approving this is
+ * the only check on it. Saying so once here is what stops the preview
+ * from reading like a verified list.
+ */
+function authoringCaveats(outcome: Extract<AuthorRefOutcome, { kind: "drafted" }>): string[] {
+  const report = outcome.report;
+  const notes = [
+    "※ マニュアル・ガイドシリーズを製品ごとに引ける API がサイトにないため、" +
+      "リンクの拾い漏れがありえます。リンク先と本文を確認してから承認してください。",
+  ];
+
+  // Escaped even though the sentence is ours: the URL inside it came from
+  // the catalog's detailHref, and an unescaped `&`/`<`/`>` in a mrkdwn
+  // section is a rendering bug, not a display detail.
+  for (const note of report.degraded) notes.push(`※ ${escapeMrkdwn(note)}`);
+  if (report.contentTruncated) {
+    notes.push("※ 取得したページが長かったため、行単位で切り詰めて読み込んでいます。");
+  }
+  if (report.categoryFromCatalog === null) {
+    // The built/kit pair is the only category the catalog can prove.
+    // general vs small is a shipping-size judgement, and it picks the
+    // ヤマト or ネコポス line in every reply this reference produces.
+    notes.push("※ category はカタログから確定できないため、生成結果です。general と small の別は必ず確認してください。");
+  }
+  if (report.refusedAliases.length > 0) {
+    notes.push(
+      `※ 他の製品が既に使用しているため除外したエイリアス: ${report.refusedAliases.map((alias) => `\`${escapeMrkdwn(alias)}\``).join("、 ")}`,
+    );
+  }
+  if (report.productUrlChangedFrom !== null) {
+    notes.push(`※ product-url がカタログ側で変わっています（旧: ${escapeMrkdwn(report.productUrlChangedFrom)}）。`);
+  }
+  return notes;
+}
+
+/** The one-line "what approving does" statement, plus the caveats. Mirrors buildRestorePayload's headline shape — one sentence, then `※` notes. */
+function authoringHeadline(outcome: Extract<AuthorRefOutcome, { kind: "drafted" }>): string {
+  const report = outcome.report;
+  const lead =
+    outcome.baseVersion === null
+      ? `新しいリファレンスを作成します（承認すると v1 として登録されます）。リンク ${report.resourceCount} 件。`
+      : `既存のリファレンスを更新します（現在 v${outcome.baseVersion} → 承認すると v${outcome.baseVersion + 1}）。` +
+        `既存のリンク ${report.preservedCount} 件を維持し、${report.addedCount} 件を追加します。`;
+  return [lead, ...authoringCaveats(outcome)].join("\n");
+}
+
+/** Japanese for a non-`drafted` outcome. Every one of these wrote nothing at all — say so, since the operator's next move is to re-run the command. */
+function authoringProblemPayload(outcome: Exclude<AuthorRefOutcome, { kind: "drafted" }>): SlackMessagePayload {
+  switch (outcome.kind) {
+    case "no-product": {
+      const degraded = outcome.degraded.map((note) => `\n※ ${escapeMrkdwn(note)}`).join("");
+      return textPayload(
+        `「${escapeMrkdwn(outcome.query)}」に該当する製品ページがサイトのカタログに見つかりませんでした。` +
+          `製品ページのない製品のリファレンスは作成できません。製品名を変えてもう一度試してください。${degraded}`,
+        "該当する製品が見つかりませんでした。",
+      );
+    }
+    case "already-exists":
+      return textPayload(
+        `\`${escapeMrkdwn(outcome.slug)}\` のリファレンスは既に存在します（v${outcome.version}）。` +
+          `更新する場合は \`@bot ref refresh ${escapeMrkdwn(outcome.slug)}\` を使ってください。`,
+        "そのリファレンスは既に存在します。",
+      );
+    case "failed":
+      // Deliberately no fallback text and no partial draft: there is no
+      // deterministic way to invent a reference, and a half-authored one
+      // approved by a human who assumed it was checked is the failure
+      // this path exists to avoid (src/refs/authoring.ts).
+      return textPayload(
+        "リファレンスの生成に失敗しました。何も書き込んでいません。もう一度試すか、内容を手で用意してください。\n" +
+          `※ 理由: ${escapeMrkdwn(outcome.trip.reason)}（${escapeMrkdwn(outcome.trip.guard)} / ${escapeMrkdwn(outcome.provider)}）` +
+          `\n※ 詳細: ${escapeMrkdwn(outcome.trip.detail)}`,
+        "リファレンスの生成に失敗しました。",
+      );
+  }
+}
+
+export interface RefCommandOptions {
+  /**
+   * Outbound HTTP for the authoring path — BOTH the takazudomodular.com
+   * reads and the provider call go through it (src/refs/site.ts,
+   * src/llm/claude.ts). Defaults to the runtime's own `fetch`, so
+   * src/jobs/worker.ts needs no change; a test passes one fake and drives
+   * the whole path.
+   */
+  fetch?: FetchLike;
+  /** Overrides src/refs/authoring.ts DEFAULT_AUTHOR_DAILY_CAP. */
+  dailyCap?: number;
+}
+
+/** Bound so a `fetch` implementation that requires its own receiver keeps it. */
+const defaultFetch: FetchLike = (...args) => fetch(...args);
+
+/**
+ * Authors a candidate reference and turns it into a draft + preview —
+ * `ref new`, `ref refresh`, and the implicit `create_reference` button
+ * (issue #17's "first-time purchase gets LLM-generated text" path), which
+ * is why this is exported rather than folded into the dispatch below.
+ *
+ * **Nothing reaches `product_refs` here.** The only write is the
+ * `ref_drafts` row; an admin clicking approve is what commits it, through
+ * approveRefDraft above, which re-parses the body and re-derives its
+ * aliases at that point. Callers must have already gated on admin.
+ */
+export async function buildAuthoredRefPayload(
+  env: Env,
+  deps: RepoDeps,
+  input: AuthorRefInput,
+  actorUserId: string,
+  options: RefCommandOptions = {},
+): Promise<SlackMessagePayload> {
+  const outcome = await authorProductRef(
+    {
+      env,
+      fetch: options.fetch ?? defaultFetch,
+      repo: deps,
+      ...(options.dailyCap === undefined ? {} : { dailyCap: options.dailyCap }),
+    },
+    input,
+  );
+  if (outcome.kind !== "drafted") return authoringProblemPayload(outcome);
+
+  // Checked before the draft exists rather than at approval time: an
+  // alias another product owns would abort commitRefDraft's batch on the
+  // `product_ref_aliases.alias_norm` PRIMARY KEY, and finding that out
+  // after a human has read and approved the whole document wastes the
+  // one scarce thing in this flow. approveRefDraft checks it again on
+  // the freshly parsed body — this is the earlier, friendlier one.
+  const conflicts = (await findAliasOwners(deps, productRefAliasNorms(outcome.ref))).filter(
+    (owner) => owner.slug !== outcome.slug,
+  );
+  if (conflicts.length > 0) {
+    const list = conflicts
+      .map((conflict) => `\`${escapeMrkdwn(conflict.aliasNorm)}\`（${escapeMrkdwn(conflict.slug)}）`)
+      .join("、 ");
+    return textPayload(
+      `生成された aliases が他の製品と重複しているため、確認を作成できませんでした: ${list}。何も書き込んでいません。`,
+      "エイリアスが重複しています。",
+    );
+  }
+
+  const draft = await createRefDraft(deps, {
+    slug: outcome.slug,
+    category: outcome.category,
+    productUrl: outcome.productUrl,
+    bodyMd: outcome.bodyMd,
+    // NULL for a new reference, the version this was authored against for
+    // a refresh — the fence that makes a stale approval refuse instead of
+    // overwriting whatever landed in between. `source` is omitted on
+    // purpose: createRefDraft derives authored/refreshed from exactly this.
+    baseVersion: outcome.baseVersion,
+    createdByUserId: actorUserId,
+    expiresAt: deps.now().getTime() + REF_DRAFT_TTL_MS,
+  });
+
+  return buildRefDraftPreviewPayload({
+    draftId: draft.id,
+    slug: outcome.slug,
+    bodyMd: outcome.bodyMd,
+    headline: authoringHeadline(outcome),
+    expiresAt: draft.expires_at,
+  });
+}
+
+/* -------------------------------------------------------------------------
  * Dispatch — the entry point src/jobs/worker.ts calls for a `ref` job.
  * ---------------------------------------------------------------------- */
 
@@ -524,8 +703,8 @@ const ADMIN_ONLY_TEXT = "この操作には管理者権限が必要です。";
  * shape in src/jobs/worker.ts: this returns the payload, the worker
  * posts it and owns the job's state transitions.
  *
- * Writes (`restore`, and `new`/`refresh` once issue #17 lands) are
- * admin-gated here on `job.actor_user_id`, and gated a SECOND time on
+ * Writes (`restore`, `new`, `refresh`) are admin-gated here on
+ * `job.actor_user_id`, and gated a SECOND time on
  * the approval click in src/slack/interactions.ts — the person who
  * clicks is not necessarily the person who typed, and the two can be
  * half an hour apart.
@@ -534,6 +713,7 @@ export async function buildRefCommandPayload(
   env: Env,
   deps: RepoDeps,
   job: JobRow,
+  options: RefCommandOptions = {},
 ): Promise<SlackMessagePayload> {
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
 
@@ -558,7 +738,7 @@ export async function buildRefCommandPayload(
 
   if (parsed.kind === "ref_new") {
     if (!isAdmin) return textPayload(ADMIN_ONLY_TEXT);
-    return textPayload("リファレンスの新規作成はまだ実装されていません（issue #17 待ち）。");
+    return buildAuthoredRefPayload(env, deps, { mode: "new", query: parsed.query }, job.actor_user_id, options);
   }
 
   const target = parsed.slug;
@@ -574,7 +754,7 @@ export async function buildRefCommandPayload(
   }
   if (parsed.kind === "ref_refresh") {
     if (!isAdmin) return textPayload(ADMIN_ONLY_TEXT);
-    return textPayload("リファレンスの更新はまだ実装されていません（issue #17 待ち）。");
+    return buildAuthoredRefPayload(env, deps, { mode: "refresh", existing: ref }, job.actor_user_id, options);
   }
 
   // parsed.kind === "ref_restore"

@@ -531,19 +531,23 @@ describe("ref commands", () => {
 
   /* -------------------------------------------------------------- misc */
 
-  it("ref new / ref refresh are admin-gated placeholders pointing at issue #17", async () => {
+  it("ref new / ref refresh refuse a non-admin before the authoring path can fetch anything", async () => {
     await setup();
     await seedV1();
 
-    expect(allText((await buildRefCommandPayload(slackEnv, deps, refJob("ref new Some Product", NOBODY))).blocks)).toContain(
-      "管理者権限",
-    );
-    expect(allText((await buildRefCommandPayload(slackEnv, deps, refJob(`ref refresh ${SLUG}`, NOBODY))).blocks)).toContain(
-      "管理者権限",
-    );
-    expect(allText((await buildRefCommandPayload(slackEnv, deps, refJob("ref new Some Product", ADMIN))).blocks)).toContain(
-      "#17",
-    );
+    // The gate has to hold BEFORE any I/O: the authoring path reads the
+    // live site and calls a paid provider (issue #17), so "refused" and
+    // "refused after spending a model call" are different outcomes.
+    const fetch = (() => {
+      throw new Error("the authoring path must not run for a non-admin");
+    }) as unknown as typeof globalThis.fetch;
+
+    expect(
+      allText((await buildRefCommandPayload(slackEnv, deps, refJob("ref new Some Product", NOBODY), { fetch })).blocks),
+    ).toContain("管理者権限");
+    expect(
+      allText((await buildRefCommandPayload(slackEnv, deps, refJob(`ref refresh ${SLUG}`, NOBODY), { fetch })).blocks),
+    ).toContain("管理者権限");
   });
 
   it("an unparseable ref command answers with the reason and the usage text", async () => {
