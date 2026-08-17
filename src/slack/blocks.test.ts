@@ -155,23 +155,31 @@ describe("buildConfirmCancelBlocks / buildApprovalBlocks", () => {
 });
 
 describe("buildMissingRefBlocks", () => {
-  it("includes the escaped query in a mrkdwn section and a create-reference button carrying the raw query", () => {
-    const blocks = buildMissingRefBlocks("Foo & <Bar>") as [
+  it("includes the escaped query in a mrkdwn section and a create-reference button carrying the caller's value", () => {
+    const blocks = buildMissingRefBlocks("Foo & <Bar>", '{"v":1,"id":"7","a":"Foo & <Bar>"}') as [
       { text: { text: string } },
       { elements: Array<{ action_id: string; value: string }> },
     ];
 
     expect(blocks[0].text.text).toContain("Foo &amp; &lt;Bar&gt;");
     expect(blocks[1].elements[0]?.action_id).toBe(CREATE_REFERENCE_ACTION_ID);
-    expect(blocks[1].elements[0]?.value).toBe("Foo & <Bar>");
+    expect(blocks[1].elements[0]?.value).toBe('{"v":1,"id":"7","a":"Foo & <Bar>"}');
   });
 
-  it("truncates an overlong query to Slack's 2000-char button value ceiling", () => {
-    const longQuery = "q".repeat(3000);
+  /**
+   * Issue #25: the value is a JSON envelope now. Slicing it to fit
+   * Slack's 2000-char ceiling would produce a value that decodes to
+   * `null` — i.e. a click that silently loses its origin job — so the
+   * fitting happens before encoding, in src/slack/commands.ts
+   * buildMissingRefPayload, and this builder must pass the value
+   * through byte-for-byte no matter how long it is.
+   */
+  it("passes an oversized value through untouched rather than slicing a JSON envelope in half", () => {
+    const oversized = `{"v":1,"id":"7","a":"${"q".repeat(3000)}"}`;
 
-    const blocks = buildMissingRefBlocks(longQuery) as [unknown, { elements: Array<{ value: string }> }];
+    const blocks = buildMissingRefBlocks("q", oversized) as [unknown, { elements: Array<{ value: string }> }];
 
-    expect(blocks[1].elements[0]?.value.length).toBe(2000);
+    expect(blocks[1].elements[0]?.value).toBe(oversized);
   });
 });
 

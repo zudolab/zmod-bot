@@ -12,6 +12,7 @@ import type { Env } from "../env";
 import {
   ACTION_IDS,
   ARRIVAL_PRESET_ORDER,
+  buildMissingRefPayload,
   computeArrivalPresetOptions,
   decodeArrivalOptionArg,
   decodeButtonValue,
@@ -357,5 +358,67 @@ describe("ACTION_IDS", () => {
       variantPick: "variant_pick",
       candidatePick: "candidate_pick",
     });
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * The missing-ref offer (issue #25) -- the button whose envelope carries
+ * the originating job, so the draft a click produces knows where it came
+ * from.
+ * ---------------------------------------------------------------------- */
+
+/** The single create_reference button's `value`, as Slack would receive it. */
+function missingRefButtonValue(query: string, originJobId: number): string {
+  const payload = buildMissingRefPayload({ query, originJobId });
+  const actions = payload.blocks[1] as { elements: Array<{ value: string }> };
+  return actions.elements[0]!.value;
+}
+
+describe("buildMissingRefPayload", () => {
+  it("carries the originating job id and the query in one decodable envelope", () => {
+    const value = missingRefButtonValue("zt seq", 4242);
+
+    expect(decodeButtonValue(value)).toEqual({ v: 1, id: "4242", a: "zt seq" });
+  });
+
+  it("still shows the unabridged query in the message text", () => {
+    const payload = buildMissingRefPayload({ query: "Foo & <Bar>", originJobId: 1 });
+
+    expect(JSON.stringify(payload.blocks[0])).toContain("Foo &amp; &lt;Bar&gt;");
+  });
+
+  /**
+   * The id is what the draft records as `origin_job_id` and what the
+   * interaction receipt keys on, so it is the half that must survive
+   * intact. encodeButtonValue throws on overflow — an overlong query
+   * must not make the button unbuildable.
+   */
+  it("truncates the query, not the id, when the two cannot both fit under the 2000-char cap", () => {
+    const value = missingRefButtonValue("q".repeat(5_000), 4242);
+
+    expect(value.length).toBeLessThanOrEqual(MAX_BUTTON_VALUE_CHARS);
+    const decoded = decodeButtonValue(value);
+    expect(decoded?.id).toBe("4242");
+    expect(decoded?.a).toBe("q".repeat(decoded!.a!.length));
+    expect(decoded!.a!.length).toBeGreaterThan(1_900);
+  });
+
+  /**
+   * A fixed character budget would be wrong here: JSON escaping makes a
+   * quote cost two characters and a lone surrogate six, so a query of
+   * 1,999 quotes encodes to roughly twice the cap.
+   */
+  it("fits a query whose every character doubles under JSON escaping", () => {
+    const value = missingRefButtonValue('"'.repeat(5_000), 7);
+
+    expect(value.length).toBeLessThanOrEqual(MAX_BUTTON_VALUE_CHARS);
+    expect(decodeButtonValue(value)?.id).toBe("7");
+  });
+
+  it("fits a query of astral-plane characters without emitting a value that fails to decode", () => {
+    const value = missingRefButtonValue("\u{1F600}".repeat(2_000), 7);
+
+    expect(value.length).toBeLessThanOrEqual(MAX_BUTTON_VALUE_CHARS);
+    expect(decodeButtonValue(value)?.id).toBe("7");
   });
 });

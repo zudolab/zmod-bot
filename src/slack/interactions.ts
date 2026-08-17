@@ -42,6 +42,7 @@ import {
   isAdminUser,
   parseCommand,
   buildArrivalPickerPayload,
+  type ButtonValueEnvelope,
 } from "./commands";
 import {
   CREATE_REFERENCE_ACTION_ID,
@@ -63,7 +64,7 @@ import { approveRefDraft, describeRefDraftOutcome, rejectRefDraft } from "../ref
 import { openView, postEphemeral, postMessage, postToResponseUrl, updateMessage, type SlackApiDeps } from "./api";
 import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
 import { formatArrivalSchedule } from "../reply/templates";
-import { log } from "../ops/log";
+import { errorSnippet, log } from "../ops/log";
 
 type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
 
@@ -204,6 +205,33 @@ function extractClickContext(payload: Record<string, unknown>): ClickContext | n
   };
 }
 
+/**
+ * Recovers what a `create_reference` click needs: the search query, and
+ * the reply job that offered the button (epic #22 — it becomes the
+ * draft's `origin_job_id`).
+ *
+ * Two shapes reach here, and both are legitimate:
+ *
+ * - **Envelope** (issue #25 onward) — `id` is the originating `jobs.id`,
+ *   `a` the query.
+ * - **Plain string** (a button rendered before that change, still sitting
+ *   in channel history) — the whole value is the query, and there is no
+ *   origin to record. decodeButtonValue returns null for it rather than
+ *   throwing, so this is an ordinary case, not an error.
+ *
+ * Returns null only for the third, illegitimate shape: something that
+ * decoded as our envelope but whose `id` is not a job number.
+ */
+function createReferenceOrigin(
+  rawValue: string,
+  envelope: ButtonValueEnvelope | null,
+): { query: string; originJobId: number | null } | null {
+  if (!envelope) return { query: rawValue, originJobId: null };
+  const originJobId = Number(envelope.id);
+  if (!Number.isInteger(originJobId) || originJobId <= 0) return null;
+  return { query: envelope.a ?? "", originJobId };
+}
+
 async function handleBlockActions(
   env: Env,
   repoDeps: RepoDeps,
@@ -215,8 +243,17 @@ async function handleBlockActions(
 
   // Idempotency — issue #14: key on (action_id, opaque target id,
   // action_ts). The envelope's `id` is the opaque target when the value
-  // decodes as our envelope; otherwise (e.g. CREATE_REFERENCE_ACTION_ID's
-  // plain-string query value) the raw value stands in for it.
+  // decodes as our envelope; otherwise the raw value stands in for it.
+  //
+  // Since issue #25 CREATE_REFERENCE_ACTION_ID also carries an envelope,
+  // whose `id` is the originating job — so two miss offers from two
+  // different mentions key apart even if Slack hands them the same
+  // `action_ts`, where the old plain-string value would have collided
+  // whenever both mentions searched for the same text. The `??` fallback
+  // stays load-bearing regardless: decodeButtonValue returns null (never
+  // throws) for a plain string, which is exactly what a create_reference
+  // button rendered *before* this change still sends, and that click must
+  // keep deduping on its query text.
   const envelopeForKey = decodeButtonValue(click.value);
   const receiptId = `interaction:${click.actionId}:${envelopeForKey?.id ?? click.value}:${click.actionTs}`;
   const isNew = await recordInteractionReceipt(repoDeps, { id: receiptId, eventType: "block_actions" });
@@ -250,16 +287,39 @@ async function handleBlockActions(
 
   if (click.actionId === CREATE_REFERENCE_ACTION_ID) {
     // The implicit authoring path (issue #17): a mention that resolved to
-    // no reference offered this button, and clicking it drafts one. The
-    // button carries the original search query as a plain string value,
-    // not the id envelope (src/slack/blocks.ts buildMissingRefBlocks).
+    // no reference offered this button, and clicking it drafts one.
     //
+    // Since issue #25 the button carries an envelope — `id` is the
+    // originating job, `a` the search query (src/slack/commands.ts
+    // buildMissingRefPayload). A button rendered before that change sends
+    // the bare query string instead, which decodes to null; that path
+    // still authors, just with no origin to record.
+    const origin = createReferenceOrigin(click.value, envelopeForKey);
+    if (!origin) {
+      // A value that decoded as our envelope but whose `id` is not a job
+      // number is a bug or a tampered click, not a stale button. Refuse
+      // rather than draft against a bogus origin — a wrong origin_job_id
+      // silently mis-attributes the draft, which is worse than no draft.
+      // Snippet-ed, not spread: a tampered `id` is unbounded caller-controlled text.
+      log("error", "interactions: create_reference envelope carried a non-numeric job id", {
+        id: errorSnippet(envelopeForKey?.id ?? ""),
+      });
+      deps.waitUntil(
+        postEphemeral(slackApiDeps, {
+          channel: click.channelId,
+          user: click.userId,
+          payload: buildTextPayload("このボタンは読み取れませんでした。`@bot ref new <検索語>` で作成してください。"),
+        }).catch((error) => log("error", "interactions: create_reference refusal failed to post", { error: errorText(error) })),
+      );
+      return ack();
+    }
+
     // Authoring fetches several pages and calls the stronger model, so it
     // can run for tens of seconds. The interim ephemeral exists because a
     // button that sits silent that long reads as broken, and the operator
     // clicks it again — which the receipt above would then swallow as a
     // duplicate, leaving them with nothing at all.
-    const query = click.value;
+    const query = origin.query;
     deps.waitUntil(
       (async () => {
         await postEphemeral(slackApiDeps, {
@@ -272,7 +332,7 @@ async function handleBlockActions(
           repoDeps,
           { mode: "new", query },
           click.userId,
-          { fetch: deps.fetch },
+          { fetch: deps.fetch, originJobId: origin.originJobId },
         );
         await postMessage(slackApiDeps, {
           channel: click.channelId,
