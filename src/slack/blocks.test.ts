@@ -8,7 +8,10 @@ import {
   buildReplyMessagePayload,
   CREATE_REFERENCE_ACTION_ID,
   escapeMrkdwn,
+  fitSectionText,
   MAX_CHARS_PER_SECTION_TEXT,
+  mrkdwnContextBlock,
+  mrkdwnSection,
   splitPreformattedText,
 } from "./blocks";
 
@@ -283,5 +286,90 @@ describe("buildArrivalDateBlocks", () => {
     ]);
     expect(blocks[0]?.elements[3]?.value).toBe("other");
     expect(blocks[0]?.elements[0]?.text.text).toBe("明日水曜 8/16");
+  });
+});
+
+/**
+ * The generic backstop (issue #33). Where fitMissingRefSectionText knows
+ * which part of its text is unbounded and bounds that, this one only sees
+ * a finished string — every builder whose text can grow with operator
+ * input, a stored reference body or an error message routes through it so
+ * none of them can post a message Slack will reject outright.
+ */
+describe("fitSectionText", () => {
+  it("returns text that already fits, byte for byte", () => {
+    expect(fitSectionText("「zt seq」に一致する製品リファレンスが見つかりませんでした。")).toBe(
+      "「zt seq」に一致する製品リファレンスが見つかりませんでした。",
+    );
+  });
+
+  it("truncates past the cap and marks the cut", () => {
+    const fitted = fitSectionText("q".repeat(10_000));
+
+    expect(fitted.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    expect(fitted.endsWith("…")).toBe(true);
+    // Filled the budget rather than over-trimming.
+    expect(fitted.length).toBe(MAX_CHARS_PER_SECTION_TEXT);
+  });
+
+  /**
+   * The input arrives already escaped, so a naive cut can land inside an
+   * `&amp;` and leave `&am` — which mrkdwn renders as those literal
+   * characters rather than the `&` they stood for.
+   */
+  it("never leaves half of an mrkdwn escape at the cut", () => {
+    // Vary the prefix length so the cut lands at every offset within an escape.
+    for (let padding = 0; padding < 8; padding += 1) {
+      const fitted = fitSectionText("q".repeat(padding) + escapeMrkdwn("&".repeat(MAX_CHARS_PER_SECTION_TEXT)));
+
+      expect(fitted.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+      const body = fitted.slice(0, -1);
+      expect(body.slice(padding)).toBe("&amp;".repeat((body.length - padding) / 5));
+    }
+  });
+
+  /**
+   * The trim above must not fire on a `&` that is simply part of the
+   * text: only a cut can dangle an escape, and only one starting in the
+   * final few characters. A bare ampersand further back is content.
+   */
+  it("does not chop back to an ampersand that the cut did not touch", () => {
+    const fitted = fitSectionText(`&${"q".repeat(10_000)}`);
+
+    expect(fitted.startsWith("&q")).toBe(true);
+    expect(fitted.length).toBe(MAX_CHARS_PER_SECTION_TEXT);
+  });
+
+  it("does not leave a half-character at the cut", () => {
+    const fitted = fitSectionText("🍣".repeat(4_000));
+
+    expect(fitted.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+    expect(JSON.stringify(fitted)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+  });
+});
+
+describe("mrkdwnSection / mrkdwnContextBlock", () => {
+  it("build the block Slack expects and bound the text", () => {
+    const section = mrkdwnSection("bot_text", "q".repeat(10_000)) as {
+      type: string;
+      block_id: string;
+      text: { type: string; text: string };
+    };
+
+    expect(section.type).toBe("section");
+    expect(section.block_id).toBe("bot_text");
+    expect(section.text.type).toBe("mrkdwn");
+    expect(section.text.text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
+
+    const context = mrkdwnContextBlock("hint", "q".repeat(10_000)) as {
+      type: string;
+      block_id: string;
+      elements: Array<{ type: string; text: string }>;
+    };
+
+    expect(context.type).toBe("context");
+    expect(context.block_id).toBe("hint");
+    expect(context.elements[0]?.type).toBe("mrkdwn");
+    expect(context.elements[0]?.text.length).toBeLessThanOrEqual(MAX_CHARS_PER_SECTION_TEXT);
   });
 });
