@@ -1,9 +1,10 @@
 # Deploy pipeline for the zmod-bot Worker.
 #
-# Typecheck + test run here (not in a separate PR-gate workflow — this repo
-# has none yet) precisely because this workflow also applies migrations to
-# production D1 and activates a new production Worker version: an untested
-# push must not reach either.
+# Typecheck + test run here, duplicating ci.yml, precisely because this
+# workflow also applies migrations to production D1 and activates a new
+# production Worker version: an untested push must not reach either. The
+# duplication is deliberate — a PR gate can be bypassed by pushing straight
+# to main, and this is the step that must not be.
 
 name: Deploy
 
