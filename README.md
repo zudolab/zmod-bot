@@ -23,6 +23,11 @@ one exists.
   admin users, with every write going through an approve/reject preview.
 - Has a `polish` mode: paste arbitrary Japanese customer-message text after `@bot polish` and get a
   more business-polite version back, same structure, same URLs, same line breaks.
+- Remembers a thread's resolved product: a follow-up mention naming only a modifier or arrival date
+  (`@bot --discord`, `@bot 明日`), with no product name at all, composes for the same product the
+  thread already resolved. That mention still returns an error when the thread has no prior
+  resolved product to inherit. See `docs/operations.md` → "Thread context inheritance" for what
+  carries forward and its degradation after 7 days.
 
 ## Architecture
 
