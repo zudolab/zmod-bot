@@ -45,14 +45,20 @@
  * envelope) to look this job back up and finish composing.
  */
 import type { Env } from "../env";
-import { claimJobs, updateJobState, type RepoDeps } from "../db/repos";
+import {
+  claimJobs,
+  getProductRefBySlug,
+  recordResolvedContext,
+  updateJobState,
+  type RepoDeps,
+} from "../db/repos";
 import { errorSnippet, log } from "../ops/log";
 import type { JobRow, JobState } from "../db/schema";
-import { resolveProductRef, type ResolveResult } from "../refs/resolve";
+import { findInheritableThreadContext, type InheritedThreadContext } from "./thread-context";
+import { resolveProductRef } from "../refs/resolve";
 import { parseProductRefMarkdown } from "../refs/parse";
 import type { ProductRef } from "../refs/model";
 import {
-  buildMissingRefBlocks,
   buildMessagePayload,
   buildReplyBlocks,
   buildReplyMessagePayload,
@@ -63,11 +69,14 @@ import { postMessage, type SlackApiDeps } from "../slack/api";
 import {
   buildArrivalPickerPayload,
   buildCandidatePickerPayload,
+  buildMissingRefPayload,
   buildVariantPickerPayload,
   computeArrivalPresetOptions,
+  NO_PRODUCT_QUERY_REASON,
   parseCommand,
   USAGE_TEXT,
-  type ParsedCommand,
+  type ArrivalPresetKey,
+  type ReplyModifiers,
 } from "../slack/commands";
 import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
 import { buildRefCommandPayload } from "../refs/commands";
@@ -139,9 +148,27 @@ function buildTextMessagePayload(text: string, summaryText: string): SlackMessag
 }
 
 /**
- * Resolves a `match`'d product ref + parsed command into either a final
- * composed reply, or — when the category needs an arrival date and none
- * was supplied — the arrival-picker payload instead. Shared by
+ * The formatted arrival sentence for an arrival preset typed in a
+ * mention, or null when the mention named none (or named one that is no
+ * longer a known preset).
+ *
+ * Split out of composeMatchPayload so a caller can compute the value
+ * exactly **once** per job: the reply path both records it into
+ * `jobs.resolved_context` and hands it to compose, and deriving it twice
+ * from `now()` could disagree across a JST day boundary — the same
+ * hazard src/slack/commands.ts encodeArrivalOptionArg exists to avoid.
+ */
+export function arrivalScheduleFromPreset(arrival: ArrivalPresetKey | null, now: NowFn): string | null {
+  if (arrival === null) return null;
+  const option = computeArrivalPresetOptions(now).find((candidate) => candidate.preset === arrival);
+  if (!option) return null;
+  return formatArrivalSchedule({ dayLabel: option.dayLabel, month: option.month, day: option.day });
+}
+
+/**
+ * Resolves a `match`'d product ref + the mention's modifiers into either
+ * a final composed reply, or — when the category needs an arrival date
+ * and none is known — the arrival-picker payload instead. Shared by
  * buildReplyJobPayload (the initial post) and
  * src/slack/interactions.ts (finishing after a variant/candidate click),
  * so both paths honor an arrival preset typed in the original mention
@@ -151,6 +178,12 @@ function buildTextMessagePayload(text: string, summaryText: string): SlackMessag
  * ComposeReplyInput.variantText, which gates `variant-match` literal
  * blocks — e.g. zudo-rail's Lite renewal notice) both go straight
  * through to composeReply; see src/reply/compose.ts ComposeReplyInput.
+ *
+ * `arrivalSchedule` is the already-decided arrival sentence (a preset
+ * typed in *this* mention, or one inherited from the thread — issue
+ * #27). It takes precedence; passing null keeps the pre-#27 behaviour of
+ * deriving it from `parsed.arrival` here, so an external caller that
+ * doesn't know about inheritance is unaffected.
  */
 export async function composeMatchPayload(
   env: Env,
@@ -158,18 +191,14 @@ export async function composeMatchPayload(
   ref: ProductRef,
   purchased: "built" | "kit",
   rawText: string,
-  parsed: Extract<ParsedCommand, { kind: "reply" }>,
+  parsed: ReplyModifiers,
   deps: RunJobDeps,
+  arrivalSchedule: string | null = null,
 ): Promise<SlackMessagePayload> {
-  let arrivalSchedule: string | null = null;
+  let effectiveArrival: string | null = null;
   if (ref.category !== "small") {
-    if (parsed.arrival !== null) {
-      const option = computeArrivalPresetOptions(deps.now).find((candidate) => candidate.preset === parsed.arrival);
-      if (option) {
-        arrivalSchedule = formatArrivalSchedule({ dayLabel: option.dayLabel, month: option.month, day: option.day });
-      }
-    }
-    if (arrivalSchedule === null) {
+    effectiveArrival = arrivalSchedule ?? arrivalScheduleFromPreset(parsed.arrival, deps.now);
+    if (effectiveArrival === null) {
       return buildArrivalPickerPayload(jobId, deps.now);
     }
   }
@@ -180,42 +209,128 @@ export async function composeMatchPayload(
     // with the rest of this job's clock (src/reply/compose.ts
     // ComposeReplyDeps.now) — never left to default to a real clock here.
     { env, fetch: deps.fetch, now: deps.now },
-    { ref, arrivalSchedule, discord: parsed.discord, direct: parsed.direct, purchased, variantText: rawText },
+    { ref, arrivalSchedule: effectiveArrival, discord: parsed.discord, direct: parsed.direct, purchased, variantText: rawText },
   );
   return buildReplyMessagePayload({ replyText: composed.text, summaryText: `${ref.displayName} の返信` });
 }
 
+/** The unknown-command reply: the parser's Japanese explanation above the usage text. */
+function buildUnknownCommandPayload(reason: string): SlackMessagePayload {
+  return buildTextMessagePayload(`${escapeMrkdwn(reason)}\n\n${USAGE_TEXT}`, "コマンドを解釈できませんでした。");
+}
+
 /**
- * Builds the Slack payload for a `reply` job from the resolver's result.
- * `miss` (epic issue #1 decision 7: "a mention that resolves to no
- * reference does not dead-end"), a `small`-category `match`, and a
- * `general`/`general-diy` `match` that already carries (or is given) an
- * arrival date all produce the final reply. Everything else — no arrival
- * date yet, `variant-ambiguous`, `ambiguous` — posts an interactive
- * quick-pick instead (see the module comment); src/slack/interactions.ts
- * finishes the job from there.
+ * Finishes a `reply` job whose product is decided — whether the mention
+ * named it or the thread supplied it — and records what it resolved to
+ * so a later mention in the thread can inherit it (issue #27).
+ *
+ * The record happens **before** the arrival-picker short-circuit inside
+ * composeMatchPayload can fire, because by this point the *product* is
+ * resolved even when the arrival date is not: a follow-up mention must
+ * be able to inherit the product from a turn that only got as far as
+ * asking a question. It is a plain UPDATE keyed on this job's own id, so
+ * an at-least-once replay of the same job simply rewrites the same row
+ * (see the module comment on the delivery tradeoff).
+ *
+ * `variant` is the *determined* built/kit choice or null — deliberately
+ * not `purchased`'s "built" default, so an inheriting turn can tell
+ * "known to be built" apart from "never decided" and ask rather than
+ * guess.
+ */
+async function finishResolvedReply(
+  env: Env,
+  repoDeps: RepoDeps,
+  job: JobRow,
+  ref: ProductRef,
+  variant: "built" | "kit" | null,
+  modifiers: ReplyModifiers,
+  inherited: InheritedThreadContext | null,
+  deps: RunJobDeps,
+): Promise<SlackMessagePayload> {
+  // Flags never accumulate across turns (issue #27) — `modifiers` comes
+  // wholly from this mention, so `@bot --discord` means discord on and
+  // direct off every time. Only the arrival date falls back to the
+  // inherited one, and only when this mention named none.
+  const arrivalSchedule =
+    ref.category === "small"
+      ? null
+      : (arrivalScheduleFromPreset(modifiers.arrival, deps.now) ?? inherited?.context.arrivalSchedule ?? null);
+
+  // The text that gates `variant-match` literal blocks (e.g. zudo-rail's
+  // Lite renewal notice) is the text that *named* the product — this
+  // mention normally, or, when this one is modifier-only, whatever the
+  // thread is still carrying from the naming turn. Recording it (rather
+  // than letting the next turn re-read the prior job's raw_text) is what
+  // keeps the notice alive past turn 2 of a chain: turn 3's predecessor
+  // is `@bot --discord`, whose text contains no needle at all.
+  const variantText = inherited?.variantText ?? job.raw_text;
+
+  await recordResolvedContext(repoDeps, job.id, { slug: ref.slug, variant, arrivalSchedule, variantText });
+
+  return composeMatchPayload(env, job.id, ref, variant ?? "built", variantText, modifiers, deps, arrivalSchedule);
+}
+
+/**
+ * Builds the Slack payload for a `reply` job. A `small`-category match
+ * and a `general`/`general-diy` match that already carries (or is given)
+ * an arrival date produce the final reply; `miss` posts the
+ * create-a-reference card (epic issue #1 decision 7: "a mention that
+ * resolves to no reference does not dead-end"); everything else — no
+ * arrival date yet, `variant-ambiguous`, `ambiguous` — posts an
+ * interactive quick-pick (see the module comment), and
+ * src/slack/interactions.ts finishes the job from there.
+ *
+ * The mention is parsed **before** it is resolved: a `reply_modifiers`
+ * mention (`@bot --discord`) carries no product to resolve, and running
+ * the resolver on it first would answer a follow-up with the
+ * missing-reference card instead of the thread's product.
  */
 async function buildReplyJobPayload(
   env: Env,
+  repoDeps: RepoDeps,
   job: JobRow,
-  resolved: ResolveResult,
   deps: RunJobDeps,
 ): Promise<SlackMessagePayload> {
-  if (resolved.kind === "miss") {
-    return buildMessagePayload(
-      buildMissingRefBlocks(stripMention(job.raw_text)),
-      "製品リファレンスが見つかりませんでした。",
-    );
-  }
-
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
 
   if (parsed.kind === "help") {
     return buildTextMessagePayload(USAGE_TEXT, "使い方");
   }
   if (parsed.kind === "unknown") {
-    return buildTextMessagePayload(`${escapeMrkdwn(parsed.reason)}\n\n${USAGE_TEXT}`, "コマンドを解釈できませんでした。");
+    return buildUnknownCommandPayload(parsed.reason);
   }
+
+  if (parsed.kind === "reply_modifiers") {
+    const inheritable = await findInheritableThreadContext(repoDeps, job);
+    // Degradation is the whole safety story here: with no memory, this
+    // mention gets byte-for-byte the message it got before inheritance
+    // existed. Never a guessed product — a wrong product in a reply the
+    // operator pastes to a customer is the worst outcome this feature has.
+    if (inheritable === null) return buildUnknownCommandPayload(NO_PRODUCT_QUERY_REASON);
+
+    const refRow = await getProductRefBySlug(repoDeps, inheritable.context.slug);
+    // The remembered slug no longer exists (retired between turns) —
+    // same degradation, for the same reason.
+    if (refRow === null) return buildUnknownCommandPayload(NO_PRODUCT_QUERY_REASON);
+
+    const ref = parseProductRefMarkdown({ slug: refRow.slug, markdown: refRow.body_md });
+    // ResolvedJobContext.variant is `string | null` on purpose (a
+    // persisted snapshot, not a live resolver result), so narrow it to
+    // today's closed union rather than trusting the stored value.
+    const storedVariant = inheritable.context.variant;
+    const variant = storedVariant === "built" || storedVariant === "kit" ? storedVariant : null;
+    if (ref.category === "general-diy" && variant === null) {
+      // Inherited a general-diy product whose built/kit choice was never
+      // decided. Ask, never default — shipping a built reply for a kit
+      // purchase sends the customer the wrong links (src/refs/resolve.ts).
+      // Nothing is recorded for this job: asking is not resolving, and the
+      // click that answers re-reads the thread (src/jobs/thread-context.ts
+      // findClickTimeThreadContext).
+      return buildVariantPickerPayload(job.id, ref.displayName);
+    }
+    return finishResolvedReply(env, repoDeps, job, ref, variant, parsed, inheritable, deps);
+  }
+
   if (parsed.kind !== "reply") {
     // src/slack/events.ts classifyJobKind already routes a text starting
     // with "ref"/"polish" to job.kind "ref"/"polish" before this function
@@ -228,6 +343,14 @@ async function buildReplyJobPayload(
     );
   }
 
+  const resolved = await resolveProductRef(repoDeps, job.raw_text);
+
+  if (resolved.kind === "miss") {
+    // `job.id` rides along in the button's envelope so the draft the
+    // click produces records which mention asked for it (epic #22
+    // thread continuity) — see src/slack/commands.ts buildMissingRefPayload.
+    return buildMissingRefPayload({ query: stripMention(job.raw_text), originJobId: job.id });
+  }
   if (resolved.kind === "variant-ambiguous") {
     const ref = parseProductRefMarkdown({ slug: resolved.slug, markdown: resolved.ref.body_md });
     return buildVariantPickerPayload(job.id, ref.displayName);
@@ -239,9 +362,10 @@ async function buildReplyJobPayload(
     );
   }
 
-  // resolved.kind === "match"
+  // resolved.kind === "match" — this mention named the product, so it
+  // inherits nothing even if the thread has memory.
   const ref = parseProductRefMarkdown({ slug: resolved.slug, markdown: resolved.ref.body_md });
-  return composeMatchPayload(env, job.id, ref, resolved.variant ?? "built", job.raw_text, parsed, deps);
+  return finishResolvedReply(env, repoDeps, job, ref, resolved.variant ?? null, parsed, null, deps);
 }
 
 /**
@@ -297,8 +421,7 @@ async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<
   switch (job.kind) {
     case "reply": {
       const repoDeps: RepoDeps = { db: env.DB, now: deps.now };
-      const resolved = await resolveProductRef(repoDeps, job.raw_text);
-      payload = await buildReplyJobPayload(env, job, resolved, deps);
+      payload = await buildReplyJobPayload(env, repoDeps, job, deps);
       break;
     }
     case "polish": {

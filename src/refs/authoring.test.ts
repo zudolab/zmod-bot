@@ -238,6 +238,7 @@ function refJob(rawText: string, actorUserId = ADMIN): JobRow {
     created_at: NOW_MS,
     updated_at: NOW_MS,
     completed_at: null,
+    resolved_context: null,
   };
 }
 
@@ -663,6 +664,45 @@ describe("ref new / ref refresh authoring", () => {
 
     expect((await onlyDraft())?.body_md).toBe(REFRESHED_BODY.trim());
     expect(site.urls.some((url) => url === PRODUCT_URL)).toBe(true);
+  });
+
+  /* ------------------------------------------- origin job id (epic #22) */
+
+  /**
+   * Issue #25: a draft authored from a miss reply's create_reference
+   * button records which mention asked for it, so a later thread-scoped
+   * lookup can find its way back. The explicit `@bot ref new <query>`
+   * path has no originating job and must stay NULL — the two live on the
+   * same function, so a leak in either direction is one option-object
+   * field away.
+   */
+  it("records the originating job on a draft authored from the create_reference button", async () => {
+    await setup();
+    const site = createFakeSite({});
+
+    await buildAuthoredRefPayload(slackEnv, deps, { mode: "new", query: "zt seq" }, ADMIN, {
+      fetch: site.fetch,
+      originJobId: 4242,
+    });
+
+    expect((await onlyDraft())?.origin_job_id).toBe(4242);
+  });
+
+  it("leaves origin_job_id NULL for an explicit `@bot ref new <query>`", async () => {
+    await setup();
+    await runRefNew({});
+
+    expect((await onlyDraft())?.origin_job_id).toBeNull();
+  });
+
+  it("leaves origin_job_id NULL for an explicit `@bot ref refresh <slug>`", async () => {
+    await setup();
+    await seedExisting();
+    const site = createFakeSite({ completion: REFRESHED_BODY, pageHtml: "<a href=/guides/series/zt-seq/>ガイド</a>" });
+
+    await buildRefCommandPayload(slackEnv, deps, refJob(`ref refresh ${REF_SLUG}`), { fetch: site.fetch });
+
+    expect((await onlyDraft())?.origin_job_id).toBeNull();
   });
 
   /* ------------------------------------------------- refusals that cost nothing */

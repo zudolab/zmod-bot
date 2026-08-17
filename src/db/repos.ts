@@ -23,6 +23,7 @@ import {
   type ProductRefVersionSource,
   type RefDraftRow,
   type RefDraftSource,
+  type ResolvedJobContext,
   type UsageTask,
 } from "./schema";
 
@@ -234,18 +235,26 @@ export interface CreateRefDraftInput {
    * explicitly; nothing else can distinguish it from a refresh.
    */
   source?: RefDraftSource;
+  /**
+   * The job (if any) this draft originated from -- e.g. a `ref new`
+   * triggered from a reply job's follow-up (epic #22 thread continuity).
+   * Omit/NULL for an explicit `@bot ref new <query>`, which has no
+   * originating job.
+   */
+  originJobId?: number | null;
 }
 
 export async function createRefDraft(deps: RepoDeps, input: CreateRefDraftInput): Promise<RefDraftRow> {
   const id = crypto.randomUUID();
   const nowMs = deps.now().getTime();
   const source: RefDraftSource = input.source ?? (input.baseVersion === null ? "authored" : "refreshed");
+  const originJobId = input.originJobId ?? null;
 
   await deps.db
     .prepare(
       `INSERT INTO ${TABLE_NAMES.refDrafts}
-         (id, slug, body_md, category, product_url, base_version, created_at, created_by, expires_at, consumed_at, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+         (id, slug, body_md, category, product_url, base_version, created_at, created_by, expires_at, consumed_at, source, origin_job_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     )
     .bind(
       id,
@@ -258,6 +267,7 @@ export async function createRefDraft(deps: RepoDeps, input: CreateRefDraftInput)
       input.createdByUserId,
       input.expiresAt,
       source,
+      originJobId,
     )
     .run();
 
@@ -273,6 +283,7 @@ export async function createRefDraft(deps: RepoDeps, input: CreateRefDraftInput)
     expires_at: input.expiresAt,
     consumed_at: null,
     source,
+    origin_job_id: originJobId,
   };
 }
 
@@ -557,6 +568,7 @@ export async function recordIncomingEvent(deps: RepoDeps, input: RecordIncomingE
     created_at: nowMs,
     updated_at: nowMs,
     completed_at: null,
+    resolved_context: null,
   };
 }
 
@@ -711,6 +723,87 @@ export async function updateJobState(deps: RepoDeps, input: UpdateJobStateInput)
 
   const result = await statement.run();
   return result.meta.changes > 0;
+}
+
+/**
+ * Parses a `jobs.resolved_context` blob (migrations/0006_jobs_resolved_context.sql)
+ * into a {@link ResolvedJobContext}, or `null` if the column is NULL, the
+ * JSON is malformed, or the parsed value is missing a string `slug`. A bad
+ * blob must degrade to "no memory" rather than throw and break a reply
+ * (epic #22 thread continuity). `variant` / `arrivalSchedule` /
+ * `variantText` are coerced to `null` when absent or non-string rather
+ * than failing the whole parse — only `slug` is load-bearing for
+ * inheritance. That coercion is also the compatibility path for rows
+ * written before `variantText` existed: they parse fine and their reader
+ * falls back to the prior job's raw text (src/jobs/thread-context.ts).
+ */
+export function parseResolvedJobContext(raw: string | null): ResolvedJobContext | null {
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const { slug, variant, arrivalSchedule, variantText } = parsed as Record<string, unknown>;
+  if (typeof slug !== "string") return null;
+  return {
+    slug,
+    variant: typeof variant === "string" ? variant : null,
+    arrivalSchedule: typeof arrivalSchedule === "string" ? arrivalSchedule : null,
+    variantText: typeof variantText === "string" ? variantText : null,
+  };
+}
+
+/**
+ * Records what a reply job actually resolved to (migrations/0006_jobs_resolved_context.sql),
+ * so a later mention in the same thread can inherit it via
+ * {@link findLatestResolvedThreadJob}. A plain UPDATE, not a conditional
+ * write — there is no claim/state fence to race here, and overwriting the
+ * same job's context (e.g. a variant clarified after the fact) is safe.
+ */
+export async function recordResolvedContext(
+  deps: RepoDeps,
+  jobId: number,
+  context: ResolvedJobContext,
+): Promise<void> {
+  await deps.db
+    .prepare(`UPDATE ${TABLE_NAMES.jobs} SET resolved_context = ?, updated_at = ? WHERE id = ?`)
+    .bind(JSON.stringify(context), deps.now().getTime(), jobId)
+    .run();
+}
+
+export interface FindLatestResolvedThreadJobInput {
+  channelId: string;
+  threadTs: string;
+  /** The calling job's own id — excluded, along with everything at or after it, so a job never inherits from itself. */
+  beforeJobId: number;
+}
+
+/**
+ * The most recent `kind: "reply"` job in this thread, strictly before
+ * `beforeJobId`, whose `resolved_context` is non-null — what a follow-up
+ * mention in the same thread inherits from (epic #22 thread continuity).
+ * Excluding the current job stops a job inheriting from itself;
+ * restricting to `reply` keeps `polish`/`ref` jobs out; requiring a
+ * non-null context is what makes a chain of modifier-only mentions work.
+ * Served by the `jobs_thread_lookup` index (migrations/0005_jobs_thread_lookup.sql).
+ */
+export async function findLatestResolvedThreadJob(
+  deps: RepoDeps,
+  input: FindLatestResolvedThreadJobInput,
+): Promise<JobRow | null> {
+  const row = await deps.db
+    .prepare(
+      `SELECT * FROM ${TABLE_NAMES.jobs}
+       WHERE channel_id = ? AND thread_ts = ? AND id < ? AND kind = 'reply' AND resolved_context IS NOT NULL
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .bind(input.channelId, input.threadTs, input.beforeJobId)
+    .first<JobRow>();
+  return row ?? null;
 }
 
 // ---------------------------------------------------------------------

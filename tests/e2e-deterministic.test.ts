@@ -266,14 +266,17 @@ afterAll(async () => {
  * scheduled via `waitUntil` (src/slack/events.ts) — i.e. the real
  * runDeliveryPass, not a second, separately-invoked one.
  */
-async function runReplyCycle(opts: { eventId: string; text: string; ai?: Ai }): Promise<{
+async function runReplyCycle(opts: { eventId: string; text: string; ai?: Ai; threadTs?: string }): Promise<{
   fetchCalls: FakeFetchCall[];
   jobId: number;
+  /** The exact `text` field the mention was delivered with — what `variant-match` literal blocks are gated on. */
+  rawText: string;
 }> {
   const { fetch: fakeFetch, calls } = createFakeSlackFetch();
   const testEnv = makeEnv(env.db, opts.ai ? { AI: opts.ai } : {});
   const { waitUntil, scheduled } = makeWaitUntil();
   const ts = nextSlackTs();
+  const rawText = `<@${BOT_USER_ID}> ${opts.text}`;
   const body = JSON.stringify({
     type: "event_callback",
     event_id: opts.eventId,
@@ -281,9 +284,13 @@ async function runReplyCycle(opts: { eventId: string; text: string; ai?: Ai }): 
       type: "app_mention",
       channel: CHANNEL,
       user: "U_HUMAN",
-      text: `<@${BOT_USER_ID}> ${opts.text}`,
+      text: rawText,
       ts,
       event_ts: ts,
+      // Omitted for a top-level mention, which src/slack/events.ts then
+      // normalises to `ts` — i.e. a thread of its own, which is why every
+      // other scenario in this file is isolated from the next by default.
+      ...(opts.threadTs === undefined ? {} : { thread_ts: opts.threadTs }),
     },
   });
   const request = await signedRequest("https://example.com/slack/events", body);
@@ -317,7 +324,7 @@ async function runReplyCycle(opts: { eventId: string; text: string; ai?: Ai }): 
   expect(scheduled).toHaveLength(1);
   await scheduled[0]; // "run the job worker" — the real runDeliveryPass.
 
-  return { fetchCalls: calls, jobId: jobRow!.id };
+  return { fetchCalls: calls, jobId: jobRow!.id, rawText };
 }
 
 /* -------------------------------------------------------------------------
@@ -790,6 +797,118 @@ describe("candidate_pick click-through", () => {
       arrivalSchedule: ARRIVAL_TOMORROW,
       purchased: "built",
       variantText: rawText,
+    });
+    expect(replyText).toBe(expected);
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * Picker clicks on a *modifier-only* follow-up (`@bot --discord`, issue
+ * #27) — the cross-wave seam between #26 (buildFinishReplyPayload) and #27
+ * (the reply_modifiers command kind). Neither branch could see this: a
+ * modifier-only mention's raw text parses to `reply_modifiers`, which
+ * buildFinishReplyPayload's drift guard rejected — so the operator clicked
+ * a button and got silence, with only a log line to show for it.
+ * ---------------------------------------------------------------------- */
+
+describe("picker click on a modifier-only follow-up", () => {
+  it("an arrival_pick click finishes the reply, using the thread's product and this turn's flag", async () => {
+    const threadTs = nextSlackTs();
+
+    // Turn 1 names the product and no date: the arrival picker, plus a
+    // resolved_context remembering addac107.
+    const first = await runReplyCycle({ eventId: nextEventId("modonly-arrival-1"), text: "ADDAC107", threadTs });
+    expect(first.fetchCalls).toHaveLength(1);
+    expect(JSON.stringify(first.fetchCalls[0]!.body.blocks)).toContain(ACTION_IDS.arrivalPick);
+
+    // Turn 2 carries only a flag. It inherits the product, finds no
+    // arrival date to inherit either, and posts a picker of its own.
+    const second = await runReplyCycle({ eventId: nextEventId("modonly-arrival-2"), text: "--discord", threadTs });
+    expect(second.fetchCalls).toHaveLength(1);
+    expect(JSON.stringify(second.fetchCalls[0]!.body.blocks)).toContain(ACTION_IDS.arrivalPick);
+
+    const { fetchCalls } = await clickButton({
+      actionId: `${ACTION_IDS.arrivalPick}_0`,
+      jobId: second.jobId,
+      a: arrivalOptionArg("tomorrow"),
+    });
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.url).toBe("https://slack.com/api/chat.update");
+    const replyText = extractReplyText(fetchCalls[0]!.body.blocks);
+    const expected = renderDeterministicReply({
+      ref: ref("addac107"),
+      // `--discord` is turn 2's own flag; flags never accumulate, and
+      // turn 1 carried none.
+      flags: { direct: false, discord: true },
+      arrivalSchedule: ARRIVAL_TOMORROW,
+      purchased: "built",
+      // The gating text is turn 1's, not "<@BOT> --discord". addac107 has
+      // no variant-match block, so this pins the exact input rather than a
+      // visible difference — tests/jobs/thread-inheritance.test.ts covers
+      // the case where it changes what the customer reads.
+      variantText: first.rawText,
+    });
+    expect(replyText).toBe(expected);
+  });
+
+  it("a variant_pick click resolves through the thread and reuses the inherited arrival date", async () => {
+    const threadTs = nextSlackTs();
+
+    const first = await runReplyCycle({
+      eventId: nextEventId("modonly-variant-1"),
+      text: "ai-lpg-diy-black 明日",
+      threadTs,
+    });
+    expect(first.fetchCalls).toHaveLength(1);
+
+    // An inherited general-diy product whose built/kit choice is NOT
+    // decided. Reaching it honestly needs a `ref refresh` to widen a
+    // product's category between two turns, so the state is written
+    // directly here — the same technique tests/jobs/thread-inheritance.test.ts
+    // uses for its degradation cases. What matters is the shape a later
+    // turn reads, not how it came to be.
+    await env.db
+      .prepare("UPDATE jobs SET resolved_context = ? WHERE id = ?")
+      .bind(
+        JSON.stringify({
+          slug: "ai-lpg",
+          variant: null,
+          arrivalSchedule: ARRIVAL_TOMORROW,
+          variantText: first.rawText,
+        }),
+        first.jobId,
+      )
+      .run();
+
+    // Turn 2 inherits an undecided variant, so it asks rather than
+    // guessing — and records nothing for itself, since asking is not
+    // resolving. The click below therefore has to reach back to turn 1.
+    const second = await runReplyCycle({ eventId: nextEventId("modonly-variant-2"), text: "--direct", threadTs });
+    expect(second.fetchCalls).toHaveLength(1);
+    expect(JSON.stringify(second.fetchCalls[0]!.body.blocks)).toContain(ACTION_IDS.variantPick);
+    const secondContext = await env.db
+      .prepare("SELECT resolved_context FROM jobs WHERE id = ?")
+      .bind(second.jobId)
+      .first<{ resolved_context: string | null }>();
+    expect(secondContext?.resolved_context).toBeNull();
+
+    const { fetchCalls } = await clickButton({
+      actionId: `${ACTION_IDS.variantPick}_1`,
+      jobId: second.jobId,
+      a: "kit",
+    });
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.url).toBe("https://slack.com/api/chat.update");
+    const replyText = extractReplyText(fetchCalls[0]!.body.blocks);
+    const expected = renderDeterministicReply({
+      ref: ref("ai-lpg"),
+      flags: { direct: true, discord: false },
+      // Not re-asked for: the thread already knew the date.
+      arrivalSchedule: ARRIVAL_TOMORROW,
+      purchased: "kit",
+      variantText: first.rawText,
     });
     expect(replyText).toBe(expected);
   });

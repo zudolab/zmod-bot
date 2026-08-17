@@ -38,7 +38,19 @@ describe("migrations/0001_init.sql", () => {
       .all<{ name: string }>();
     const indexNames = result.results.map((row) => row.name);
 
-    expect(indexNames).toEqual(expect.arrayContaining(["product_ref_aliases_slug", "jobs_claimable"]));
+    expect(indexNames).toEqual(
+      expect.arrayContaining(["product_ref_aliases_slug", "jobs_claimable", "jobs_thread_lookup"]),
+    );
+  });
+
+  it("0004/0005/0006 apply cleanly: origin_job_id, jobs_thread_lookup, and resolved_context all exist", async () => {
+    env = await createTestEnv();
+
+    const refDraftColumns = await env.db.prepare("PRAGMA table_info(ref_drafts)").all<{ name: string }>();
+    expect(refDraftColumns.results.map((row) => row.name)).toEqual(expect.arrayContaining(["origin_job_id"]));
+
+    const jobColumns = await env.db.prepare("PRAGMA table_info(jobs)").all<{ name: string }>();
+    expect(jobColumns.results.map((row) => row.name)).toEqual(expect.arrayContaining(["resolved_context"]));
   });
 
   it("is additive-only: applying it a second time does not throw away data, it fails loudly on the duplicate CREATE TABLE", async () => {

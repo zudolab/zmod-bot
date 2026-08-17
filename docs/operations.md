@@ -248,15 +248,59 @@ Operational limits:
   and correct it.
 - **Drafts expire after 30 minutes.** An expired preview must be re-run, not clicked.
 
-Two known limitations, both deliberate rather than oversights:
+One known limitation, deliberate rather than an oversight:
 
 - **A refresh that needs a category change is a dead end today.** The draft check refuses any change
   to `category`, and if the catalog has since gained a DIY variant the constraint demands one — so
   both fire and nothing can be drafted. There is no `ref edit`; the operator's only route is a
   manual body change.
-- **After approving an authored reference, the bot does not automatically post the reply that was
-  originally asked for.** `ref_drafts` carries no originating job id, so there is nothing to resume.
-  Mention the product again to get the reply. Tracked separately.
+
+After approving an authored reference, the bot now automatically posts the reply the originating
+mention asked for, into that mention's own thread — see "Resume after reference authoring is
+at-most-once" under "Thread context inheritance" below for exactly what that does and does not
+guarantee.
+
+## Thread context inheritance
+
+A follow-up mention in the same Slack thread that carries only modifiers or an arrival date and
+names no product (`@bot --discord`, `@bot 明日`) reuses the product, variant, and arrival date the
+thread already resolved, instead of making the operator retype the product name every turn
+(epic #22). Implementation: `src/jobs/thread-context.ts` (the lookup, shared by the delivery path
+and the picker-click path so they cannot disagree), `src/jobs/worker.ts` `finishResolvedReply` (what
+gets recorded and how it's applied). The operator-facing shape is in `@bot help`'s usage text.
+
+What carries forward, and what does not:
+
+- **Product slug and built/kit variant** carry forward unchanged.
+- **Arrival date** carries forward only when the follow-up names none of its own — naming one (e.g.
+  `@bot --discord 明後日`) overrides the inherited one.
+- **Flags (`--discord` / `--direct`) never accumulate.** Each mention's flags come wholly from that
+  mention's own text, so `@bot --discord` on turn 3 of a thread turns discord on and direct off
+  regardless of what turn 2 carried.
+- **A mention that names a product always resolves fresh**, inheriting nothing, even mid-thread.
+
+Only the most recent prior **reply**-kind job in the same `(channel, thread_ts)` that resolved a
+product is consulted — a `polish` or `ref` job in the same thread is never mistaken for reply
+context, and a top-level mention (no `thread_ts`) is always alone in a thread of its own, so it
+never inherits anything.
+
+**7-day degradation.** A resolved thread's memory lives in `jobs.resolved_context`, and `done` jobs
+are deleted 7 days after completion by the retention sweep (`src/jobs/retention.ts:40` — see
+"Retention" above). A modifier-only follow-up in a thread whose last resolved reply has aged out
+therefore finds nothing to inherit and silently degrades to the bot's pre-inheritance behaviour: the
+「製品名またはURLを指定してください。」error plus the usage text, exactly as if the thread had never
+resolved anything. This is not a bug — an old thread simply stops being conversational, and the
+recovery is to mention the product by name again.
+
+**Resume after reference authoring is at-most-once.** When a mention resolves to no reference and an
+admin authors one and approves the draft, the bot posts the reply that mention originally asked for
+into the mention's own thread (issue #26, `resumeOriginReply` in `src/slack/interactions.ts`) — the
+operator no longer needs to mention the product again. This delivery has **no retry**:
+`commitRefDraft` stamps the draft's `consumed_at` inside the same `db.batch()` as the reference
+write, so a Worker crash or a terminal Slack failure *after* that commit loses the reply with
+nothing left to retry it — a repeat click on approve refuses outright, because `consumed_at` is
+already stamped. The operator's recovery is the same one-line fix as any other lost delivery:
+mention the product again, which now resolves to a `match` and produces a normal reply.
 
 ## AI Gateway is deliberately not wired up
 

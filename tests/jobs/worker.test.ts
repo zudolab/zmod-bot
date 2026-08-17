@@ -11,6 +11,7 @@ import { runDeliveryPass, runJob, runScheduledSweep, type ComposeReplyFn } from 
 import { normalizeAlias } from "../../src/refs/resolve";
 import { ACTION_IDS } from "../../src/slack/commands";
 import { CREATE_REFERENCE_ACTION_ID } from "../../src/slack/blocks";
+import { decodeButtonValue } from "../../src/slack/commands";
 import type { ComposeReplyInput } from "../../src/reply/compose";
 import type { FetchLike, SleepFn } from "../../src/types";
 import { createTestEnv, type TestEnvHandle } from "../helpers/test-env";
@@ -175,7 +176,7 @@ describe("delivery worker (issue #10)", () => {
   it("a resolver miss posts the 'no reference yet' message with a create-reference button and completes the job", async () => {
     await setup();
     // Deliberately no product seeded -- every query misses.
-    await seedReplyJob("ev-miss", "<@U0BOT1> some totally unknown product xyz");
+    const job = await seedReplyJob("ev-miss", "<@U0BOT1> some totally unknown product xyz");
     const { fetch, calls } = createFakeFetch();
 
     const result = await runDeliveryPass({ env: fakeEnv, fetch, now: () => new Date(clockMs), sleep: noWaitSleep() });
@@ -184,6 +185,14 @@ describe("delivery worker (issue #10)", () => {
     expect(calls).toHaveLength(1);
     const blocks = JSON.stringify(calls[0]?.body.blocks);
     expect(blocks).toContain(CREATE_REFERENCE_ACTION_ID);
+
+    // Issue #25: the button carries THIS job, so the draft a click
+    // produces records where the request came from (epic #22). Asserted
+    // on the delivered payload rather than on buildMissingRefPayload,
+    // because the wiring is the part that can silently be wrong -- the
+    // worker is the only caller that knows the job id.
+    const buttonValue = (calls[0]?.body.blocks as [unknown, { elements: Array<{ value: string }> }])[1].elements[0]!.value;
+    expect(decodeButtonValue(buttonValue)).toEqual({ v: 1, id: String(job.id), a: "some totally unknown product xyz" });
 
     const row = await env!.db.prepare("SELECT state FROM jobs WHERE event_id = ?").bind("ev-miss").first<{
       state: string;

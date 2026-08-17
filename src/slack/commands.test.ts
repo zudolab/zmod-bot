@@ -12,6 +12,7 @@ import type { Env } from "../env";
 import {
   ACTION_IDS,
   ARRIVAL_PRESET_ORDER,
+  buildMissingRefPayload,
   computeArrivalPresetOptions,
   decodeArrivalOptionArg,
   decodeButtonValue,
@@ -202,9 +203,52 @@ describe("parseCommand", () => {
     });
   });
 
-  it("flags/arrival-only input with no product name is unknown", () => {
-    expect(parseCommand(`<@${BOT}> --discord`, BOT).kind).toBe("unknown");
-    expect(parseCommand(`<@${BOT}> 明日`, BOT).kind).toBe("unknown");
+  /**
+   * Issue #27's carve-out: modifier-only input is no longer `unknown` —
+   * it is its own `reply_modifiers` kind, so src/jobs/worker.ts can offer
+   * it the thread's remembered product. The parser stays pure and says
+   * nothing about inheritance; it only reports "modifiers, no product".
+   */
+  it("flags/arrival-only input with no product name parses as reply_modifiers, carrying the modifiers", () => {
+    expect(parseCommand(`<@${BOT}> --discord`, BOT)).toEqual({
+      kind: "reply_modifiers",
+      discord: true,
+      direct: false,
+      arrival: null,
+    });
+    expect(parseCommand(`<@${BOT}> 明日`, BOT)).toEqual({
+      kind: "reply_modifiers",
+      discord: false,
+      direct: false,
+      arrival: "tomorrow",
+    });
+    expect(parseCommand(`<@${BOT}> --direct --discord 明後日`, BOT)).toEqual({
+      kind: "reply_modifiers",
+      discord: true,
+      direct: true,
+      arrival: "day_after_tomorrow",
+    });
+  });
+
+  it("the carve-out is narrow: bad input with no product name is still unknown", () => {
+    // An unknown flag, an empty mention, and contradictory arrival
+    // presets must not be smuggled into reply_modifiers — each one is a
+    // typo the operator needs told about, not a follow-up to inherit.
+    expect(parseCommand(`<@${BOT}> --bogus`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}> --discord --bogus`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}>`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}>    `, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}> 明日 明後日`, BOT).kind).toBe("unknown");
+  });
+
+  it("a product name alongside modifiers is still a plain reply, never reply_modifiers", () => {
+    expect(parseCommand(`<@${BOT}> foo --discord 明日`, BOT)).toEqual({
+      kind: "reply",
+      query: "foo",
+      discord: true,
+      direct: false,
+      arrival: "tomorrow",
+    });
   });
 });
 
@@ -357,5 +401,67 @@ describe("ACTION_IDS", () => {
       variantPick: "variant_pick",
       candidatePick: "candidate_pick",
     });
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * The missing-ref offer (issue #25) -- the button whose envelope carries
+ * the originating job, so the draft a click produces knows where it came
+ * from.
+ * ---------------------------------------------------------------------- */
+
+/** The single create_reference button's `value`, as Slack would receive it. */
+function missingRefButtonValue(query: string, originJobId: number): string {
+  const payload = buildMissingRefPayload({ query, originJobId });
+  const actions = payload.blocks[1] as { elements: Array<{ value: string }> };
+  return actions.elements[0]!.value;
+}
+
+describe("buildMissingRefPayload", () => {
+  it("carries the originating job id and the query in one decodable envelope", () => {
+    const value = missingRefButtonValue("zt seq", 4242);
+
+    expect(decodeButtonValue(value)).toEqual({ v: 1, id: "4242", a: "zt seq" });
+  });
+
+  it("still shows the unabridged query in the message text", () => {
+    const payload = buildMissingRefPayload({ query: "Foo & <Bar>", originJobId: 1 });
+
+    expect(JSON.stringify(payload.blocks[0])).toContain("Foo &amp; &lt;Bar&gt;");
+  });
+
+  /**
+   * The id is what the draft records as `origin_job_id` and what the
+   * interaction receipt keys on, so it is the half that must survive
+   * intact. encodeButtonValue throws on overflow — an overlong query
+   * must not make the button unbuildable.
+   */
+  it("truncates the query, not the id, when the two cannot both fit under the 2000-char cap", () => {
+    const value = missingRefButtonValue("q".repeat(5_000), 4242);
+
+    expect(value.length).toBeLessThanOrEqual(MAX_BUTTON_VALUE_CHARS);
+    const decoded = decodeButtonValue(value);
+    expect(decoded?.id).toBe("4242");
+    expect(decoded?.a).toBe("q".repeat(decoded!.a!.length));
+    expect(decoded!.a!.length).toBeGreaterThan(1_900);
+  });
+
+  /**
+   * A fixed character budget would be wrong here: JSON escaping makes a
+   * quote cost two characters and a lone surrogate six, so a query of
+   * 1,999 quotes encodes to roughly twice the cap.
+   */
+  it("fits a query whose every character doubles under JSON escaping", () => {
+    const value = missingRefButtonValue('"'.repeat(5_000), 7);
+
+    expect(value.length).toBeLessThanOrEqual(MAX_BUTTON_VALUE_CHARS);
+    expect(decodeButtonValue(value)?.id).toBe("7");
+  });
+
+  it("fits a query of astral-plane characters without emitting a value that fails to decode", () => {
+    const value = missingRefButtonValue("\u{1F600}".repeat(2_000), 7);
+
+    expect(value.length).toBeLessThanOrEqual(MAX_BUTTON_VALUE_CHARS);
+    expect(decodeButtonValue(value)?.id).toBe("7");
   });
 });

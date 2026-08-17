@@ -182,14 +182,18 @@ export function buildApprovalBlocks(input: ApprovalButtonsInput): unknown[] {
 /** Interaction-payload action_id for the "create a reference" button built by buildMissingRefBlocks. */
 export const CREATE_REFERENCE_ACTION_ID = "create_reference";
 
-// Slack rejects a button `value` over 2000 chars (invalid_blocks) — the
-// same ceiling CLAUDE.md/epic issue #1 decision 8 calls out for draft
-// tokens; a raw search query is expected to be far shorter, but this is a
-// hard protocol ceiling, not a style choice, so it is enforced here.
-const MAX_BUTTON_VALUE_CHARS = 2_000;
-
-/** Builds the "no reference found" message: a mrkdwn note plus an inline "create a reference" button (epic issue #1 decision 7). */
-export function buildMissingRefBlocks(query: string): unknown[] {
+/**
+ * Builds the "no reference found" message: a mrkdwn note plus an inline
+ * "create a reference" button (epic issue #1 decision 7).
+ *
+ * `buttonValue` arrives already encoded and already inside Slack's
+ * 2000-char `value` ceiling — src/slack/commands.ts buildMissingRefPayload
+ * owns both, the same way it owns the arrival/variant/candidate pickers'
+ * envelopes. This builder must NOT truncate it: since issue #25 the value
+ * is a JSON envelope carrying the originating job id, and slicing JSON
+ * yields a value that decodes to `null` rather than a shorter one.
+ */
+export function buildMissingRefBlocks(query: string, buttonValue: string): unknown[] {
   return [
     {
       type: "section",
@@ -206,7 +210,7 @@ export function buildMissingRefBlocks(query: string): unknown[] {
         plainTextButton({
           actionId: CREATE_REFERENCE_ACTION_ID,
           label: "リファレンスを作成",
-          value: query.slice(0, MAX_BUTTON_VALUE_CHARS),
+          value: buttonValue,
           style: "primary",
         }),
       ],

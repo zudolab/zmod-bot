@@ -18,6 +18,7 @@ import { parseCommaSeparated } from "../env";
 import {
   buildArrivalDateBlocks,
   buildMessagePayload,
+  buildMissingRefBlocks,
   escapeMrkdwn,
   type SlackMessagePayload,
 } from "./blocks";
@@ -28,8 +29,37 @@ import {
 
 export type ArrivalPresetKey = "tomorrow" | "day_after_tomorrow" | "day_after_day_after_tomorrow";
 
+/**
+ * The modifier half of a `reply` command — the parts that mean the same
+ * thing whether or not the mention also named a product. Shared by the
+ * `reply` and `reply_modifiers` variants so a consumer that only needs
+ * the modifiers (src/jobs/worker.ts composeMatchPayload) can accept
+ * either without re-listing the fields.
+ */
+export interface ReplyModifiers {
+  discord: boolean;
+  direct: boolean;
+  arrival: ArrivalPresetKey | null;
+}
+
 export type ParsedCommand =
-  | { kind: "reply"; query: string; discord: boolean; direct: boolean; arrival: ArrivalPresetKey | null }
+  | ({ kind: "reply"; query: string } & ReplyModifiers)
+  /**
+   * Valid reply modifiers with no product query — `@bot --discord`,
+   * `@bot 明日 --direct` (epic #22 thread continuity, issue #27). This is
+   * a deliberately narrow carve-out from `unknown`: the *only* way to
+   * reach it is a mention whose every token is a known flag or a known
+   * arrival preset. An unknown flag, an empty mention and two
+   * contradictory arrival presets all still return `unknown`.
+   *
+   * The parser stays pure and says nothing about inheritance — it only
+   * reports that the mention carried modifiers and no product. Deciding
+   * whether a prior job in the thread supplies the missing product is
+   * src/jobs/worker.ts's job, and when nothing does, that path replies
+   * with exactly the {@link NO_PRODUCT_QUERY_REASON} + usage text this
+   * input produced before the carve-out existed.
+   */
+  | ({ kind: "reply_modifiers" } & ReplyModifiers)
   | { kind: "ref_show"; slug: string }
   | { kind: "ref_history"; slug: string }
   | { kind: "ref_new"; query: string }
@@ -46,6 +76,7 @@ export const USAGE_TEXT = [
   "`@bot <製品名またはURL>` — 返信を作成します（到着予定日が未指定ならボタンで確認します）",
   "`@bot <製品名> 明日|明後日|明々後日` — 到着予定日を指定して返信します",
   "`@bot <製品名> --discord --direct` — Discord案内を追加 / 直接取引（評価依頼なし）にします（順不同、どちらか片方でも両方でも可）",
+  "`@bot --discord` / `@bot 明日` — 同じスレッド内なら、直前に返信した製品のまま指定だけを付け直します（フラグは毎回指定し直しです）",
   "`@bot polish` の次の行に整えたい文章を貼り付けます",
   "`@bot ref show|history|restore|new|refresh <slugまたは製品名> [引数]` — 製品リファレンスの管理コマンド",
   "`@bot help` — この使い方を表示します",
@@ -79,6 +110,15 @@ const ARRIVAL_PRESET_BY_TOKEN: Record<string, ArrivalPresetKey> = {
   明々後日: "day_after_day_after_tomorrow",
 };
 const REF_SUBCOMMANDS = new Set(["show", "history", "restore", "new", "refresh"]);
+
+/**
+ * The Japanese explanation a mention naming no product gets. Exported
+ * because src/jobs/worker.ts replies with exactly this string when a
+ * `reply_modifiers` mention finds no thread context to inherit — the
+ * degradation contract for issue #27 is that such a mention gets the
+ * *same* message it got before inheritance existed, not a new one.
+ */
+export const NO_PRODUCT_QUERY_REASON = "製品名またはURLを指定してください。";
 
 function unknownCommand(raw: string, reason: string): ParsedCommand {
   return { kind: "unknown", raw, reason };
@@ -164,7 +204,17 @@ export function parseCommand(rawText: string, botUserId: string): ParsedCommand 
   }
 
   const query = queryWords.join(" ").trim();
-  if (query === "") return unknownCommand(rawText, "製品名またはURLを指定してください。");
+  if (query === "") {
+    // Modifiers with no product name — a `reply_modifiers` command, so a
+    // follow-up in a thread can be given its predecessor's product (see
+    // that variant's doc comment). The `unknown` fallback below is not
+    // reachable from a non-empty body (every token is either a modifier
+    // or a query word, and an empty body returned above), and is kept
+    // only so "no product AND no modifier" can never be mistaken for a
+    // valid command if that ever changes.
+    if (discord || direct || arrival !== null) return { kind: "reply_modifiers", discord, direct, arrival };
+    return unknownCommand(rawText, NO_PRODUCT_QUERY_REASON);
+  }
 
   return { kind: "reply", query, discord, direct, arrival };
 }
@@ -268,10 +318,10 @@ export function decodeArrivalOptionArg(
  * ---------------------------------------------------------------------- */
 
 /**
- * Slack rejects a button `value` over 2000 chars (invalid_blocks) — the
- * same ceiling src/slack/blocks.ts's (non-exported) MAX_BUTTON_VALUE_CHARS
- * enforces for the missing-ref flow; restated here per that file's own
- * precedent of not sharing the literal across files.
+ * Slack rejects a button `value` over 2000 chars (invalid_blocks). Every
+ * button this repo renders — the pickers below and, since issue #25, the
+ * missing-ref "create a reference" button — goes through encodeButtonValue,
+ * so this is the single place the ceiling is enforced.
  */
 export const MAX_BUTTON_VALUE_CHARS = 2_000;
 
@@ -280,11 +330,17 @@ export interface ButtonValueEnvelope {
   /**
    * Opaque id the click needs to recover its context — a `jobs.id`
    * (stringified) for arrival_pick/arrival_other/variant_pick/
-   * candidate_pick, or a `ref_drafts.id` (uuid) for ref_approve/
-   * ref_reject. Never the reference body or reply text itself.
+   * candidate_pick and (since issue #25) create_reference, or a
+   * `ref_drafts.id` (uuid) for ref_approve/ref_reject. Never the
+   * reference body or reply text itself.
+   *
+   * src/slack/interactions.ts also keys its interaction receipt on this,
+   * so it must identify what the click acts *on*: two create_reference
+   * buttons offered by two different reply jobs are two different targets
+   * even if Slack hands them the same `action_ts`.
    */
   id: string;
-  /** Action-specific argument, e.g. an encoded arrival option, a chosen candidate slug, or "built"/"kit". */
+  /** Action-specific argument, e.g. an encoded arrival option, a chosen candidate slug, "built"/"kit", or create_reference's search query. */
   a?: string;
   /**
    * A disambiguation choice carried forward into a chained arrival-date
@@ -458,4 +514,47 @@ export function buildCandidatePickerPayload(jobId: number, candidateSlugs: reado
     })),
   });
   return buildMessagePayload([promptBlock, ...pickerBlocks], "複数の製品候補があります。該当するものを選択してください。");
+}
+
+export interface MissingRefPayloadInput {
+  /** The search text the resolver failed on — shown in the message and carried back on the click as the authoring query. */
+  query: string;
+  /** The `reply` job whose resolution missed. Recorded as `ref_drafts.origin_job_id` when the button is clicked (epic #22). */
+  originJobId: number;
+}
+
+/**
+ * Fits `query` into a create_reference envelope that respects Slack's
+ * 2000-char `value` cap.
+ *
+ * The id is the load-bearing half — it is what the resulting draft records
+ * as `origin_job_id` and what src/slack/interactions.ts keys its receipt
+ * on — so the **query** is what gets truncated when the two cannot both
+ * fit, never the other way round (issue #25). The loop measures the
+ * *encoded* length rather than subtracting a fixed overhead because JSON
+ * escaping can cost more than one character per source character (a quote
+ * becomes two, a lone surrogate six).
+ */
+function fitMissingRefEnvelope(input: MissingRefPayloadInput): ButtonValueEnvelope {
+  const id = String(input.originJobId);
+  let query = input.query;
+  for (;;) {
+    const envelope: ButtonValueEnvelope = { v: 1, id, a: query };
+    const overflow = JSON.stringify(envelope).length - MAX_BUTTON_VALUE_CHARS;
+    if (overflow <= 0 || query === "") return envelope;
+    query = query.slice(0, Math.max(0, query.length - overflow));
+  }
+}
+
+/**
+ * Builds the "no reference found" message for a `reply` job whose
+ * resolution missed (epic issue #1 decision 7: a miss does not dead-end).
+ *
+ * Lives here rather than in src/slack/blocks.ts for the same reason the
+ * pickers above do: the button carries a `ButtonValueEnvelope`, and this
+ * module owns that protocol.
+ */
+export function buildMissingRefPayload(input: MissingRefPayloadInput): SlackMessagePayload {
+  const value = encodeButtonValue(fitMissingRefEnvelope(input));
+  return buildMessagePayload(buildMissingRefBlocks(input.query, value), "製品リファレンスが見つかりませんでした。");
 }

@@ -4,12 +4,15 @@ import {
   claimJobs,
   consumeRefDraft,
   createRefDraft,
+  findLatestResolvedThreadJob,
   findProductRefByAlias,
   getProductRefBySlug,
   getProductRefVersion,
   listProductRefAliases,
   listProductRefVersions,
+  parseResolvedJobContext,
   recordIncomingEvent,
+  recordResolvedContext,
   restoreProductRefVersion,
   updateJobState,
   upsertProductRef,
@@ -203,6 +206,53 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
       await setup();
       expect(await consumeRefDraft(deps, "does-not-exist")).toBeNull();
     });
+
+    it("createRefDraft round-trips originJobId, including the null case", async () => {
+      await setup();
+
+      const withoutOriginJob = await createRefDraft(deps, {
+        slug: "new-product",
+        category: "general",
+        productUrl: null,
+        bodyMd: "# New Product\n",
+        baseVersion: null,
+        createdByUserId: "U1",
+        expiresAt: clockMs + 60_000,
+      });
+      expect(withoutOriginJob.origin_job_id).toBeNull();
+      const storedWithout = await deps.db
+        .prepare("SELECT origin_job_id FROM ref_drafts WHERE id = ?")
+        .bind(withoutOriginJob.id)
+        .first<{ origin_job_id: number | null }>();
+      expect(storedWithout?.origin_job_id).toBeNull();
+
+      const job = await recordIncomingEvent(deps, {
+        eventId: "ev-origin",
+        eventType: "app_mention",
+        kind: "reply",
+        channelId: "C1",
+        threadTs: "t-origin",
+        actorUserId: "U1",
+        rawText: "2v2",
+      });
+
+      const withOriginJob = await createRefDraft(deps, {
+        slug: "another-product",
+        category: "general",
+        productUrl: null,
+        bodyMd: "# Another Product\n",
+        baseVersion: null,
+        createdByUserId: "U1",
+        expiresAt: clockMs + 60_000,
+        originJobId: job!.id,
+      });
+      expect(withOriginJob.origin_job_id).toBe(job!.id);
+      const storedWith = await deps.db
+        .prepare("SELECT origin_job_id FROM ref_drafts WHERE id = ?")
+        .bind(withOriginJob.id)
+        .first<{ origin_job_id: number | null }>();
+      expect(storedWith?.origin_job_id).toBe(job!.id);
+    });
   });
 
   describe("durable intake + jobs", () => {
@@ -323,6 +373,202 @@ describe("D1 repositories (Miniflare-backed storage semantics)", () => {
       }>();
       expect(finalRow?.state).toBe("done");
       expect(finalRow?.completed_at).not.toBeNull();
+    });
+
+    it("recordResolvedContext round-trips the blob, and overwriting the same job's context is safe", async () => {
+      await setup();
+      const job = await recordIncomingEvent(deps, {
+        eventId: "ev-resolved",
+        eventType: "app_mention",
+        kind: "reply",
+        channelId: "C1",
+        threadTs: "t-resolved",
+        actorUserId: "U1",
+        rawText: "2v2",
+      });
+
+      await recordResolvedContext(deps, job!.id, {
+        slug: "2v2",
+        variant: null,
+        arrivalSchedule: "明後日月曜（8/18）到着予定になります。",
+        variantText: "<@U0BOT1> 2v2 lite",
+      });
+      const first = await deps.db.prepare("SELECT resolved_context FROM jobs WHERE id = ?").bind(job!.id).first<{
+        resolved_context: string | null;
+      }>();
+      expect(parseResolvedJobContext(first?.resolved_context ?? null)).toEqual({
+        slug: "2v2",
+        variant: null,
+        arrivalSchedule: "明後日月曜（8/18）到着予定になります。",
+        variantText: "<@U0BOT1> 2v2 lite",
+      });
+
+      // Overwriting the same job's context (e.g. a variant clarified after the fact) is a plain UPDATE, not a conflict.
+      await recordResolvedContext(deps, job!.id, { slug: "2v2", variant: "kit", arrivalSchedule: null, variantText: null });
+      const second = await deps.db.prepare("SELECT resolved_context FROM jobs WHERE id = ?").bind(job!.id).first<{
+        resolved_context: string | null;
+      }>();
+      expect(parseResolvedJobContext(second?.resolved_context ?? null)).toEqual({
+        slug: "2v2",
+        variant: "kit",
+        arrivalSchedule: null,
+        variantText: null,
+      });
+    });
+
+    describe("parseResolvedJobContext", () => {
+      it("returns null for a NULL column", () => {
+        expect(parseResolvedJobContext(null)).toBeNull();
+      });
+
+      it("returns null for malformed JSON rather than throwing", () => {
+        expect(parseResolvedJobContext("{not valid json")).toBeNull();
+      });
+
+      it("returns null when the parsed value has no string slug", () => {
+        expect(parseResolvedJobContext(JSON.stringify({ variant: "kit" }))).toBeNull();
+        expect(parseResolvedJobContext(JSON.stringify({ slug: 42 }))).toBeNull();
+        expect(parseResolvedJobContext(JSON.stringify("just a string"))).toBeNull();
+      });
+
+      it("coerces a missing/non-string variant, arrivalSchedule or variantText to null instead of failing the whole parse", () => {
+        // Also the compatibility path for a blob written before
+        // `variantText` existed (epic #22 seam fix): it parses, and its
+        // reader falls back to the source job's raw text.
+        expect(parseResolvedJobContext(JSON.stringify({ slug: "2v2" }))).toEqual({
+          slug: "2v2",
+          variant: null,
+          arrivalSchedule: null,
+          variantText: null,
+        });
+        expect(
+          parseResolvedJobContext(JSON.stringify({ slug: "2v2", variantText: 42 }))?.variantText,
+        ).toBeNull();
+      });
+    });
+
+    describe("findLatestResolvedThreadJob", () => {
+      it("returns the most recent prior reply job with a non-null resolved_context, ignoring the current job, polish/ref jobs, and unresolved prior jobs", async () => {
+        await setup();
+        const channelId = "C-thread";
+        const threadTs = "t-chain";
+
+        const replyA = await recordIncomingEvent(deps, {
+          eventId: "ev-chain-a",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId,
+          threadTs,
+          actorUserId: "U1",
+          rawText: "2v2",
+        });
+        await recordResolvedContext(deps, replyA!.id, { slug: "2v2", variant: null, arrivalSchedule: null, variantText: null });
+
+        // A polish job never resolves a product -- resolved_context stays NULL, and its kind alone should exclude it anyway.
+        setClock(clockMs + 1000);
+        await recordIncomingEvent(deps, {
+          eventId: "ev-chain-b",
+          eventType: "app_mention",
+          kind: "polish",
+          channelId,
+          threadTs,
+          actorUserId: "U1",
+          rawText: "make it more polite",
+        });
+
+        // A reply job that never reached recordResolvedContext -- must be skipped, not treated as the "latest" one.
+        setClock(clockMs + 1000);
+        await recordIncomingEvent(deps, {
+          eventId: "ev-chain-c",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId,
+          threadTs,
+          actorUserId: "U1",
+          rawText: "hmm",
+        });
+
+        setClock(clockMs + 1000);
+        const replyD = await recordIncomingEvent(deps, {
+          eventId: "ev-chain-d",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId,
+          threadTs,
+          actorUserId: "U1",
+          rawText: "wingie2",
+        });
+        await recordResolvedContext(deps, replyD!.id, { slug: "wingie2", variant: null, arrivalSchedule: null, variantText: null });
+
+        setClock(clockMs + 1000);
+        const currentJob = await recordIncomingEvent(deps, {
+          eventId: "ev-chain-current",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId,
+          threadTs,
+          actorUserId: "U1",
+          rawText: "same but kit",
+        });
+
+        const found = await findLatestResolvedThreadJob(deps, { channelId, threadTs, beforeJobId: currentJob!.id });
+        expect(found?.id).toBe(replyD!.id);
+        expect(parseResolvedJobContext(found?.resolved_context ?? null)?.slug).toBe("wingie2");
+      });
+
+      it("returns null when the thread has no resolved prior reply job", async () => {
+        await setup();
+        const job = await recordIncomingEvent(deps, {
+          eventId: "ev-empty-thread",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId: "C-empty",
+          threadTs: "t-empty",
+          actorUserId: "U1",
+          rawText: "2v2",
+        });
+
+        expect(
+          await findLatestResolvedThreadJob(deps, {
+            channelId: "C-empty",
+            threadTs: "t-empty",
+            beforeJobId: job!.id,
+          }),
+        ).toBeNull();
+      });
+
+      it("does not cross channel/thread boundaries", async () => {
+        await setup();
+        const otherThreadJob = await recordIncomingEvent(deps, {
+          eventId: "ev-other-thread",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId: "C1",
+          threadTs: "t-other",
+          actorUserId: "U1",
+          rawText: "2v2",
+        });
+        await recordResolvedContext(deps, otherThreadJob!.id, { slug: "2v2", variant: null, arrivalSchedule: null, variantText: null });
+
+        setClock(clockMs + 1000);
+        const thisThreadJob = await recordIncomingEvent(deps, {
+          eventId: "ev-this-thread",
+          eventType: "app_mention",
+          kind: "reply",
+          channelId: "C1",
+          threadTs: "t-this",
+          actorUserId: "U1",
+          rawText: "wingie2",
+        });
+
+        expect(
+          await findLatestResolvedThreadJob(deps, {
+            channelId: "C1",
+            threadTs: "t-this",
+            beforeJobId: thisThreadJob!.id,
+          }),
+        ).toBeNull();
+      });
     });
   });
 

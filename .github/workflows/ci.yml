@@ -53,3 +53,11 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Check seed migration is up to date
+        run: |
+          pnpm seed:build
+          if ! git diff --exit-code migrations/; then
+            echo "::error::migrations/0002_seed_product_refs.sql is stale — run 'pnpm seed:build' and commit the result."
+            exit 1
+          fi
