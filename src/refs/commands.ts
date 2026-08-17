@@ -640,7 +640,7 @@ export async function buildAuthoredRefPayload(
     {
       env,
       fetch: options.fetch ?? defaultFetch,
-      now: deps.now,
+      repo: deps,
       ...(options.dailyCap === undefined ? {} : { dailyCap: options.dailyCap }),
     },
     input,

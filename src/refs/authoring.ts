@@ -66,7 +66,7 @@ import {
   type SitePageLink,
   type SiteProduct,
 } from "./site";
-import type { FetchLike, NowFn } from "../types";
+import type { FetchLike } from "../types";
 
 /** Issue #17: "maxTokens 4096". The longest seed reference is ~1,300 characters, so this is several times the largest real output. */
 export const AUTHOR_MAX_TOKENS = 4_096;
@@ -143,10 +143,17 @@ export type AuthorRefInput =
   | { mode: "refresh"; existing: ProductRefRow };
 
 export interface AuthorRefDeps {
+  /** Configuration only — AUTHOR_PROVIDER, the API key, SITE_API_BASE. The store arrives as {@link AuthorRefDeps.repo}. */
   env: Env;
   fetch: FetchLike;
-  /** Defaults to a real clock. Injected so the UTC-day budget window is testable. */
-  now?: NowFn;
+  /**
+   * The D1 handle and clock the caller already holds. Deliberately not
+   * re-derived from `env.DB` here: two handles for one binding is how a
+   * caller's own (test, or scoped) binding gets silently bypassed, and
+   * the clock has to be the same one the caller's `expires_at` is
+   * computed from or the budget window and the draft window disagree.
+   */
+  repo: RepoDeps;
   /** Overrides {@link DEFAULT_AUTHOR_DAILY_CAP}. */
   dailyCap?: number;
 }
@@ -813,8 +820,7 @@ async function recordUsage(
  * into a `product_refs` write.
  */
 export async function authorProductRef(deps: AuthorRefDeps, input: AuthorRefInput): Promise<AuthorRefOutcome> {
-  const now = deps.now ?? (() => new Date());
-  const repoDeps: RepoDeps = { db: deps.env.DB, now };
+  const repoDeps = deps.repo;
   const baseUrl = deps.env.SITE_API_BASE;
   const siteDeps = { fetch: deps.fetch, baseUrl };
 
