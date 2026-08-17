@@ -1,0 +1,65 @@
+# zmod-bot Slack app manifest.
+#
+# This file documents the app's FULL intended configuration — including
+# Event Subscriptions and Interactivity — as one source of truth. It is
+# NOT meant to be pasted into Slack's "Create New App -> From an app
+# manifest" screen as-is on a fresh setup: Slack validates
+# event_subscriptions.request_url and interactivity.request_url LIVE, at
+# manifest-apply time, by sending a url_verification challenge and
+# requiring a 200 back within a few seconds. Before your Worker is
+# deployed, that request URL resolves to nothing and the whole import is
+# rejected — not just those two fields.
+#
+# See docs/setup.md for the actual order:
+#   - Step 2: create the app from just display_information + oauth_config
+#     (strip the settings.event_subscriptions / settings.interactivity
+#     blocks below, or create the app "From scratch" and add scopes by
+#     hand instead).
+#   - Steps 10-11: once the Worker is deployed and /health responds,
+#     replace REPLACE-WITH-YOUR-WORKER-URL below with the real
+#     `https://<name>.<subdomain>.workers.dev` host and either paste this
+#     whole file into the app's "App Manifest" editor (api.slack.com/apps
+#     -> your app -> App Manifest), or add Event Subscriptions /
+#     Interactivity through the regular Slack UI — both work once the
+#     Worker is live, because that's exactly when the request URL starts
+#     resolving.
+
+display_information:
+  name: zmod-bot
+  description: Composes Mercari Shops purchase-reply messages for Takazudo Modular
+  background_color: "#2c2d30"
+
+features:
+  bot_user:
+    display_name: zmod-bot
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      # Receive app_mention events.
+      - app_mentions:read
+      # Post replies (chat.postMessage), ephemeral admin refusals
+      # (chat.postEphemeral), and edit an in-flight message
+      # (chat.update) — all covered by this one scope.
+      - chat:write
+
+settings:
+  event_subscriptions:
+    # Replace with the deployed Worker's real URL — see docs/setup.md
+    # step 10. Cannot be saved until the Worker is live and responding.
+    request_url: https://REPLACE-WITH-YOUR-WORKER-URL/slack/events
+    bot_events:
+      - app_mention
+  interactivity:
+    is_enabled: true
+    # Same caveat as above — see docs/setup.md step 11.
+    request_url: https://REPLACE-WITH-YOUR-WORKER-URL/slack/interactions
+  # Keep this app internal to the one workspace it's installed in — no
+  # reason to make it publicly installable. (This corresponds to leaving
+  # "Distribution" off in the app config UI; the manifest schema has no
+  # separate key for it — Slack derives it from whether you've ever
+  # opted in to public distribution, which you shouldn't.)
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
