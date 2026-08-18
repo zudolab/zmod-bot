@@ -157,7 +157,8 @@ export interface ResolvedJobContext {
   variantText: string | null;
 }
 
-export type UsageTask = "compose" | "author" | "polish";
+/** Logical accounting buckets stored in usage_log.task (a TEXT column, so widening needs no migration). */
+export type UsageTask = "compose" | "author" | "polish" | "policy";
 
 export interface UsageLogRow {
   id: number;

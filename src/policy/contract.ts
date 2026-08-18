@@ -28,3 +28,12 @@ export const POLICY_REQUIRED_HEADINGS = [
 
 /** Maximum UTF-8 byte size of the tracked policy document. */
 export const POLICY_MAX_BYTES = 8192;
+
+/** Maximum UTF-16 code-unit length accepted for an operator's edit request. */
+export const POLICY_MAX_REQUEST_CHARS = 1000;
+
+/** Policy-edit calls allowed per UTC day. Kept deliberately small: edits are rare and human-reviewed. */
+export const POLICY_DAILY_CAP = 20;
+
+/** Wall-clock bound for the policy editor call. Policy edits run outside Slack's acknowledgement path. */
+export const POLICY_UPDATE_DEADLINE_MS = 30_000;

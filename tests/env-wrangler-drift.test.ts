@@ -164,4 +164,10 @@ describe("Env interface / wrangler.jsonc parity (issue #18)", () => {
     expect(extractEnvInterfaceFields().length).toBeGreaterThan(0);
     expect(collectEnvReferences().size).toBeGreaterThan(0);
   });
+
+  it("keeps the policy editor's quality-first provider and model fallback defaults explicit", () => {
+    expect(wranglerConfig.vars.POLICY_PROVIDER).toBe("claude");
+    expect(wranglerConfig.vars.POLICY_MODEL).toBe("");
+    expect(extractEnvInterfaceFields()).toEqual(expect.arrayContaining(["POLICY_PROVIDER", "POLICY_MODEL"]));
+  });
 });
