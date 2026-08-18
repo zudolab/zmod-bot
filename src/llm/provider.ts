@@ -1,7 +1,7 @@
 /**
  * One interface behind Workers AI and Claude — see epic issue #1's
  * provider table for which task uses which by default (COMPOSE_PROVIDER
- * / AUTHOR_PROVIDER / POLISH_PROVIDER in src/env.ts).
+ * / AUTHOR_PROVIDER / POLISH_PROVIDER / POLICY_PROVIDER in src/env.ts).
  *
  * Adapters only: no guards, no fallback, no orchestration. A provider
  * returns what the model said plus enough envelope to judge it; deciding
@@ -12,7 +12,7 @@ import type { ComposeProviderName } from "../env";
 
 /**
  * Provider ids are exactly the values COMPOSE_PROVIDER / AUTHOR_PROVIDER
- * / POLISH_PROVIDER can hold, so selecting a provider from an env var is
+ * / POLISH_PROVIDER / POLICY_PROVIDER can hold, so selecting a provider from an env var is
  * a total map with no cast and no default branch.
  */
 export type LlmProviderId = ComposeProviderName;
@@ -131,9 +131,9 @@ export function assertLlmRequest(provider: LlmProviderId, req: LlmRequest): void
 }
 
 /**
- * Which of the four LLM-backed jobs a call is for — see epic issue #1's
+ * Which LLM-backed job a call is for — see epic issue #1 and the policy PR loop's
  * provider table. Kept here from the scaffold: the adapters are
  * task-agnostic, but the caller that picks between them (issue #13) maps
  * task -> env var -> provider id.
  */
-export type LlmTask = "assemble_section" | "author_ref" | "refresh_ref" | "polish";
+export type LlmTask = "assemble_section" | "author_ref" | "refresh_ref" | "polish" | "policy_update";
