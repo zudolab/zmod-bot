@@ -90,7 +90,8 @@ export interface SlackEventReceiptRow {
   received_at: number;
 }
 
-export type JobKind = "reply" | "polish" | "ref";
+/** Logical worker route stored in jobs.kind (TEXT): customer reply, polish, reference management, or admin policy PR. */
+export type JobKind = "reply" | "polish" | "ref" | "policy_update";
 
 /** pending -> composing -> delivering -> done | failed | dead (see src/jobs/queue.ts). */
 export type JobState = "pending" | "composing" | "delivering" | "done" | "failed" | "dead";
@@ -157,7 +158,7 @@ export interface ResolvedJobContext {
   variantText: string | null;
 }
 
-/** Logical accounting buckets stored in usage_log.task (a TEXT column, so widening needs no migration). */
+/** Logical accounting buckets stored in usage_log.task (TEXT); `policy` is the policy_update job's rewrite call, and widening needs no migration. */
 export type UsageTask = "compose" | "author" | "polish" | "policy";
 
 export interface UsageLogRow {

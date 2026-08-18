@@ -21,6 +21,7 @@ import {
   isAdminUser,
   MAX_BUTTON_VALUE_CHARS,
   parseCommand,
+  USAGE_TEXT,
   type ArrivalPresetKey,
   type ParsedCommand,
 } from "./commands";
@@ -139,6 +140,11 @@ describe("parseCommand", () => {
       expected: { kind: "polish", text: "一行目\n二行目" },
     },
     {
+      name: "policy preserves the request verbatim after the required space",
+      text: `<@${BOT}> policy  一行目\n二行目  `,
+      expected: { kind: "policy_update", request: " 一行目\n二行目  " },
+    },
+    {
       name: "help",
       text: `<@${BOT}> help`,
       expected: { kind: "help" },
@@ -187,6 +193,17 @@ describe("parseCommand", () => {
   it("polish with no pasted text after it is unknown", () => {
     expect(parseCommand(`<@${BOT}> polish`, BOT).kind).toBe("unknown");
     expect(parseCommand(`<@${BOT}> polish\n   `, BOT).kind).toBe("unknown");
+  });
+
+  it("policy requires a non-blank request after an ASCII space", () => {
+    expect(parseCommand(`<@${BOT}> policy`, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}> policy   `, BOT).kind).toBe("unknown");
+    expect(parseCommand(`<@${BOT}> policy\t変更`, BOT)).toMatchObject({ kind: "reply" });
+  });
+
+  it("usage identifies the policy command as admin-only", () => {
+    expect(USAGE_TEXT).toContain("`@bot policy <変更内容>`");
+    expect(USAGE_TEXT).toContain("管理者のみ");
   });
 
   it("two conflicting arrival presets in one message is unknown", () => {
