@@ -66,6 +66,7 @@ export type ParsedCommand =
   | { kind: "ref_refresh"; slug: string }
   | { kind: "ref_restore"; slug: string; version: number }
   | { kind: "polish"; text: string }
+  | { kind: "policy_update"; request: string }
   | { kind: "help" }
   /** Unparseable input or an unknown flag — `reason` is a ready-to-post Japanese explanation, never a stack trace (issue #14: "never a silent no-op and never a stack trace"). */
   | { kind: "unknown"; raw: string; reason: string };
@@ -78,6 +79,7 @@ export const USAGE_TEXT = [
   "`@bot <製品名> --discord --direct` — Discord案内を追加 / 直接取引（評価依頼なし）にします（順不同、どちらか片方でも両方でも可）",
   "`@bot --discord` / `@bot 明日` — 同じスレッド内なら、直前に返信した製品のまま指定だけを付け直します（フラグは毎回指定し直しです）",
   "`@bot polish` の次の行に整えたい文章を貼り付けます",
+  "`@bot policy <変更内容>` — 返信ポリシーの更新PRを作成します（管理者のみ）",
   "`@bot ref show|history|restore|new|refresh <slugまたは製品名> [引数]` — 製品リファレンスの管理コマンド",
   "`@bot help` — この使い方を表示します",
 ].join("\n");
@@ -130,7 +132,8 @@ function unknownCommand(raw: string, reason: string): ParsedCommand {
  * grammar tests can assert on it directly with no I/O or clock involved.
  */
 export function parseCommand(rawText: string, botUserId: string): ParsedCommand {
-  const body = stripBotMention(rawText, botUserId).trim();
+  const untrimmedBody = stripBotMention(rawText, botUserId);
+  const body = untrimmedBody.trim();
   if (body === "") return unknownCommand(rawText, "コマンドが空です。製品名またはコマンドを入力してください。");
 
   const newlineIndex = body.indexOf("\n");
@@ -140,6 +143,18 @@ export function parseCommand(rawText: string, botUserId: string): ParsedCommand 
   const head = headTokens[0]?.toLowerCase() ?? "";
 
   if (head === "help") return { kind: "help" };
+
+  // Unlike the tokenized reply/ref grammars, a policy request is prose:
+  // preserve every byte after the required command separator so the
+  // operator's requested wording reaches the policy editor unchanged.
+  if (/^policy /i.test(untrimmedBody)) {
+    const request = untrimmedBody.slice("policy ".length);
+    if (request.trim() === "") return unknownCommand(rawText, "policy の後に変更内容を入力してください。");
+    return { kind: "policy_update", request };
+  }
+  if (/^policy$/i.test(body)) {
+    return unknownCommand(rawText, "policy の後に変更内容を入力してください。");
+  }
 
   if (head === "polish") {
     const text = afterFirstLine.trim();

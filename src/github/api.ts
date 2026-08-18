@@ -7,9 +7,10 @@
  * or pull request.
  */
 import type { FetchLike } from "../types";
+import { POLICY_DOC_PATH } from "../policy/contract";
 
-/** Kept local until the policy contract topic lands; orchestration will unify the import. */
-export const POLICY_FILE_PATH = "policy/reply-guidance.md";
+/** Backward-compatible export for callers/tests; the policy contract owns the literal. */
+export const POLICY_FILE_PATH = POLICY_DOC_PATH;
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";

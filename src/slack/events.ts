@@ -17,6 +17,10 @@ import { verifySlackSignature } from "./verify";
 import { recordIncomingEvent } from "../db/repos";
 import type { JobKind } from "../db/schema";
 import { runDeliveryPass } from "../jobs/worker";
+import { isAdminUser } from "./commands";
+import { buildMessagePayload } from "./blocks";
+import { postMessage } from "./api";
+import { errorSnippet, log } from "../ops/log";
 
 /** The subset of Slack's app_mention event payload this bot reads. */
 export interface SlackAppMentionEvent {
@@ -38,9 +42,10 @@ export function isAllowedChannel(env: Env, channelId: string): boolean {
   return allowed.includes(channelId);
 }
 
-/** Classifies the job `kind` from an app_mention's text: the first word after the leading `<@BOT_ID>` mention, case-insensitive. Everything other than `polish`/`ref` is a `reply`. */
+/** Classifies the job `kind` from an app_mention's first command word, case-insensitively. */
 export function classifyJobKind(text: string): JobKind {
   const withoutMention = text.replace(/^<@[^>]*>\s*/, "");
+  if (/^policy /i.test(withoutMention)) return "policy_update";
   const commandWord = withoutMention.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
   if (commandWord === "polish") return "polish";
   if (commandWord === "ref") return "ref";
@@ -168,6 +173,32 @@ export async function handleSlackEventsWithDeps(
   const kind = classifyJobKind(event.text);
   const threadTs = typeof event.thread_ts === "string" ? event.thread_ts : event.ts;
 
+  // Policy editing is admin-only. Refuse before durable intake so an
+  // unauthorized request can never become a remotely executable job.
+  if (kind === "policy_update" && !isAdminUser(env, event.user)) {
+    deps.waitUntil(
+      postMessage(
+        { botToken: env.SLACK_BOT_TOKEN, fetch: deps.fetch, sleep },
+        {
+          channel: event.channel,
+          threadTs,
+          payload: buildMessagePayload(
+            [{ type: "section", block_id: "policy_admin_only", text: { type: "mrkdwn", text: "この操作には管理者権限が必要です。" } }],
+            "この操作には管理者権限が必要です。",
+          ),
+        },
+      ).then(
+        () => undefined,
+        (error: unknown) => {
+          log("error", "slack events: non-admin policy refusal failed to post", {
+            error: errorSnippet(error),
+          });
+        },
+      ),
+    );
+    return ack();
+  }
+
   let job;
   try {
     job = await withBudget(
@@ -203,7 +234,9 @@ export async function handleSlackEventsWithDeps(
       runDeliveryPass({ env, fetch: deps.fetch, now: deps.now }).then(
         () => undefined,
         (error: unknown) => {
-          console.error("[slack/events] immediate delivery pass failed; cron sweep will retry.", error);
+          log("error", "slack events: immediate delivery pass failed; cron sweep will retry", {
+            error: errorSnippet(error),
+          });
         },
       ),
     );

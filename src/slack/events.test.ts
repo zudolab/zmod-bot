@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMockD1, type MockD1QueryHandler } from "../db/test-support";
 import type { Env } from "../env";
-import type { WaitUntilFn } from "../types";
+import type { FetchLike, WaitUntilFn } from "../types";
 import { classifyJobKind, handleSlackEventsWithDeps, isAllowedChannel, type SlackEventsDeps } from "./events";
 
 const SIGNING_SECRET = "test-signing-secret";
@@ -301,6 +301,54 @@ describe("handleSlackEventsWithDeps", () => {
       expect(jobInsert?.bindings).toContain("polish");
     });
 
+    it("an admin policy mention atomically records the receipt and policy_update job before the 200 ack", async () => {
+      const payload = appMentionEventCallback({ text: "<@U_BOT> policy 語調を簡潔にする", user: "U_ADMIN" });
+      const request = await makeSignedRequest(JSON.stringify(payload));
+      const mockDb = createMockD1({ onQuery: newEventOnQuery() });
+      const originalBatch = mockDb.batch.bind(mockDb);
+      let batchCalls = 0;
+      mockDb.batch = async (statements) => {
+        batchCalls++;
+        expect(statements).toHaveLength(2);
+        return originalBatch(statements);
+      };
+      const { waitUntil } = makeWaitUntil();
+
+      const response = await handleSlackEventsWithDeps(
+        request,
+        baseEnv({ SLACK_ADMIN_USER_IDS: "U_ADMIN", SLACK_BOT_TOKEN: "xoxb-test" }),
+        makeDeps({ db: mockDb, waitUntil }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(batchCalls).toBe(1);
+      expect(mockDb.calls.find((call) => call.query.includes("INSERT INTO jobs"))?.bindings).toContain("policy_update");
+    });
+
+    it("a non-admin policy mention gets a polite refusal and no receipt or job row", async () => {
+      const payload = appMentionEventCallback({ text: "<@U_BOT> policy 語調を簡潔にする", user: "U_NOT_ADMIN" });
+      const request = await makeSignedRequest(JSON.stringify(payload));
+      const mockDb = createMockD1();
+      const { waitUntil, scheduled } = makeWaitUntil();
+      const slackBodies: Record<string, unknown>[] = [];
+      const fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        slackBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({ ok: true, channel: ALLOWED_CHANNEL, ts: "1760000000.1" });
+      }) as FetchLike;
+
+      const response = await handleSlackEventsWithDeps(
+        request,
+        baseEnv({ SLACK_ADMIN_USER_IDS: "U_ADMIN", SLACK_BOT_TOKEN: "xoxb-test" }),
+        makeDeps({ db: mockDb, waitUntil, fetch }),
+      );
+      await Promise.all(scheduled);
+
+      expect(response.status).toBe(200);
+      expect(mockDb.calls).toHaveLength(0);
+      expect(slackBodies).toHaveLength(1);
+      expect(JSON.stringify(slackBodies[0])).toContain("管理者権限");
+    });
+
     it("defaults thread_ts to event.ts when thread_ts is absent", async () => {
       const payload = appMentionEventCallback();
       const body = JSON.stringify(payload);
@@ -410,6 +458,11 @@ describe("classifyJobKind", () => {
 
   it("classifies 'ref' as the command word", () => {
     expect(classifyJobKind("<@U_BOT> ref show oxi-one")).toBe("ref");
+  });
+
+  it("classifies 'policy' as policy_update", () => {
+    expect(classifyJobKind("<@U_BOT> policy 語調を変更")).toBe("policy_update");
+    expect(classifyJobKind("<@U_BOT> policy\t語調を変更")).toBe("reply");
   });
 
   it("classifies everything else as 'reply'", () => {
