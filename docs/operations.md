@@ -1,7 +1,7 @@
 # Operations
 
-Reference for running zmod-bot day to day: what every secret/var does, how to read the job queue
-and `usage_log`, retention, and token rotation.
+Reference for running zmod-bot day to day: what every secret/var does, how to operate the policy
+PR loop, read the job queue and `usage_log`, retention, and token rotation.
 
 ## Secrets and vars
 
@@ -16,7 +16,8 @@ actually reads).
 |---|---|---|
 | `SLACK_BOT_TOKEN` | Slack app → OAuth & Permissions → Bot User OAuth Token (`xoxb-…`), after Install to Workspace | Every Slack Web API call (`chat.postMessage`, `chat.postEphemeral`, `chat.update`, `views.open`) gets a `401` from Slack. Jobs still get created and retried (see "Job states" below), but delivery never succeeds — a job exhausts its 5 attempts and lands `dead`. |
 | `SLACK_SIGNING_SECRET` | Slack app → Basic Information → App Credentials → Signing Secret | `src/slack/verify.ts` throws on a blank secret, which both `POST /slack/events` and `POST /slack/interactions` turn into a `500 server misconfigured` for **every** request — including Slack's own `url_verification` challenge, so Event Subscriptions can't even be enabled (see `docs/setup.md` step 10). With a *wrong* (not blank) secret, every request instead gets `401 invalid signature`. |
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) → API Keys | The Claude adapter (`src/llm/claude.ts`) throws `LlmConfigurationError` on every call. For `compose`/`polish`, this is caught by the guard envelope and downgrades to the deterministic fallback (a reply/polish is still produced — see "Reading `usage_log`" below). Reference authoring (`ref new`/`ref refresh`, once wired — see "Reference authoring" below) has **no fallback**: per issue #17's design, an authoring failure is reported to the operator, not silently downgraded, because there is no deterministic way to invent a reference. |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) → API Keys | The Claude adapter (`src/llm/claude.ts`) throws `LlmConfigurationError` on every call. For `compose`/`polish`, this is caught by the guard envelope and downgrades to the deterministic fallback (a reply/polish is still produced — see "Reading `usage_log`" below). Reference authoring (`ref new`/`ref refresh`) has **no fallback**: per issue #17's design, an authoring failure is reported to the operator, not silently downgraded, because there is no deterministic way to invent a reference. |
+| `GITHUB_TOKEN` | A fine-grained PAT created for this repository only; **Contents: Read and write** + **Pull requests: Read and write**, and nothing else. Configure with `npx wrangler secret put GITHUB_TOKEN` only after the repository-private release gate in `docs/setup.md`. | `@bot policy` fails before any GitHub request. Do not set this while the repository is public. Rotate it immediately if it is exposed; the policy loop does not log the token or upstream response bodies. |
 
 ### Vars (`wrangler.jsonc`'s `vars` block, plain values, safe to commit — none of these are credentials)
 
@@ -26,10 +27,13 @@ actually reads).
 | `SLACK_ALLOWED_CHANNEL_IDS` | Comma-separated Slack channel ids (`parseCommaSeparated`, `src/env.ts`) | **Left empty, the bot acts in every channel it's invited to** — this is the documented default, not a misconfiguration (`src/slack/events.ts` `isAllowedChannel`). Set it if you want to restrict the bot to specific channels. |
 | `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user ids | **Left empty, nobody can run `ref new`/`ref refresh`/`ref restore` or click an approve/reject/create-reference button** — every one of those gets "この操作には管理者権限が必要です" (`isAdminUser`, `src/slack/commands.ts`). Reference management is effectively disabled without this set. |
 | `COMPOSE_PROVIDER` | `"workers-ai"` \| `"claude"` | Selects the provider for assembling a reply's resource section. An unrecognized value logs a warning and **fails open to `"workers-ai"`** (`src/reply/compose.ts` `selectComposeProvider`) — a typo here degrades silently rather than breaking replies. |
-| `AUTHOR_PROVIDER` | `"workers-ai"` \| `"claude"` | Selects the provider for `ref new`/`ref refresh`. Same fail-open behavior as `COMPOSE_PROVIDER`. **Declared but not yet read by any shipped code path** — see "Reference authoring" below. |
+| `AUTHOR_PROVIDER` | `"workers-ai"` \| `"claude"` | Selects the provider for `ref new`/`ref refresh`. An unrecognized value logs a warning and falls back to Claude. |
 | `POLISH_PROVIDER` | `"workers-ai"` \| `"claude"` | Selects the provider for `@bot polish`. Same fail-open behavior. |
+| `POLICY_PROVIDER` | Blank/absent or `"claude"` \| `"workers-ai"` | Selects the policy-document editor. Blank/absent defaults to Claude; an unrecognized value logs a warning and falls back to Claude. This chooses the adapter only, not the model tier. |
 | `CLAUDE_MODEL` | An Anthropic model id, e.g. `claude-sonnet-5` | Blank (the shipped default) falls back to `src/llm/claude.ts`'s `DEFAULT_CLAUDE_MODEL` (`claude-haiku-4-5`) — the one place that default lives. Set this to raise the tier without a code change. |
-| `SITE_API_BASE` | `https://takazudomodular.com` (shipped default — leave as-is in production) | The base URL reference authoring is designed to fetch product facts from (`GET {SITE_API_BASE}/api/products`, `/api/search` — see issue #17). **Not yet read by any shipped code path** — same caveat as `AUTHOR_PROVIDER`. |
+| `POLICY_MODEL` | An Anthropic model id for policy edits | Blank/absent falls back to `CLAUDE_MODEL`, then to the Claude adapter's `DEFAULT_CLAUDE_MODEL`. It is ignored when `POLICY_PROVIDER=workers-ai`. |
+| `SITE_API_BASE` | `https://takazudomodular.com` (shipped default — leave as-is in production) | Base URL for the reference-authoring catalog/product-page/search fetches (`GET {SITE_API_BASE}/api/products`, `/api/search`, and product detail paths). A bad or unreachable site produces an authoring refusal; it never invents a reference. |
+| `GITHUB_REPO` | The private repository in `owner/name` form, for example `zudolab/zmod-bot` | Missing or malformed configuration stops `@bot policy` before any GitHub request. There is no fallback: set it explicitly after the private-repository release gate. |
 
 ### Bindings (`wrangler.jsonc`, not secrets or vars)
 
@@ -37,6 +41,83 @@ actually reads).
 |---|---|---|
 | `DB` | `d1_databases` | The D1 database created in `docs/setup.md` step 1. |
 | `AI` | `ai` | Workers AI. **Deliberately no `gateway: { id }` option** — see "AI Gateway is deliberately not wired up" below. |
+
+## Policy PR loop
+
+The policy loop is an admin-only, review-first path. It does not edit the running Worker or merge
+anything automatically:
+
+1. An administrator mentions `@bot policy <change request>` in Slack. A non-admin receives an
+   immediate refusal and no receipt or job is created. An admin request is written as a Slack event
+   receipt and `policy_update` job in one D1 batch before Slack receives `200`.
+2. The delivery pass (immediately after the acknowledgement when possible, and from the five-minute
+   cron sweep) reads `policy/reply-guidance.md` from the repository's default branch.
+3. The configured policy editor receives the complete document and operator request. The provider
+   fallback chain is `POLICY_PROVIDER` (blank/absent → Claude) then, for Claude, `POLICY_MODEL` →
+   `CLAUDE_MODEL` → the adapter default.
+4. The candidate must preserve the immutable header and required headings, fit the UTF-8 size cap,
+   contain no code fence/control characters/new URL/fixed customer-reply clause, and be a complete
+   document. A rejected candidate posts a reason token to Slack and makes **zero GitHub writes**.
+5. A valid candidate is written only to `policy-update/job-<job-id>` and only at
+   `policy/reply-guidance.md`; the client then opens a pull request. The Slack reply contains the
+   pull-request link. Re-running a failed job discovers the existing branch/content/PR and converges
+   instead of creating another PR.
+
+There is a single-open-policy-PR rule across all policy jobs. If another `policy-update/*` pull
+request is open, the new request makes no branch, content, or PR mutation and posts the existing PR
+link as a conflict. Review and merge the open PR first, or clear the stale PR as described below.
+
+### Review checklist before merge
+
+The reviewer should confirm all of the following before merging a policy PR:
+
+- The diff contains only `policy/reply-guidance.md`; no workflow, source, migration, generated file,
+  or unrelated product-reference changes are present.
+- The immutable HTML-comment header is byte-for-byte unchanged and the required headings remain in
+  their original order.
+- No URL was added or changed, no customer data appears, and no fixed greeting/shipping/arrival/
+  evaluation/DIY/Discord/closing clause was copied into the document.
+- The new guidance reads as production copy for Japanese customer replies, not as instructions to
+  an operator or a model-debugging transcript.
+- The PR title/body contain no unescaped Slack/GitHub mentions that could notify unrelated people.
+
+After review, merge the PR into the repository's default branch. A deploy then runs
+`pnpm policy:build` and embeds the merged Markdown into the Worker; the generated
+`src/policy/generated.ts` file is intentionally ignored and must not be committed. The change is
+not live until that deployment succeeds.
+
+### Rollback and stale-PR recovery
+
+To roll back a bad policy that has already merged, use GitHub's normal history rather than editing
+the generated file:
+
+```bash
+git revert <merged-policy-commit>
+git push origin <default-branch>
+```
+
+The deploy workflow rebuilds the policy and makes the reverted document live. A revert is itself a
+reviewable commit; do not force-push or hand-edit `src/policy/generated.ts`.
+
+If a bot PR is stale (for example, its job died after the branch or PR was created), inspect the
+open PR list and the job row first. Close the stale `policy-update/*` PR, delete its bot branch in
+GitHub, and submit the policy request again after confirming no other policy PR is open. Deleting
+the branch is important: it prevents a new job from inheriting an old, reviewed-against-the-wrong-
+base branch. If the original job is still `failed` and its backoff has elapsed, a cron retry is safe
+and will reuse the existing PR instead; do not create a second request while that retry is pending.
+
+### Policy-vs-engine boundary and future escalation
+
+The document is for mutable wording guidance: Japanese tone/register, paragraph/link presentation,
+and small additions under the existing headings. It cannot change fixed reply clauses, product
+reference facts/URLs, resolver or command grammar, arrival/shipping logic, validation rails, or any
+external API behavior. Those changes require a normal code PR with tests and review.
+
+If an operator asks for a behavior the policy document cannot express, do not try to smuggle code
+instructions or URLs into the policy. Open a GitHub issue describing the desired behavior, affected
+examples, and acceptance checks; a coding agent can then implement it in a normal branch/PR. This
+issue-escalation path is future operational guidance only — the bot deliberately does not create or
+assign coding-agent issues today.
 
 ## Job states
 
@@ -185,6 +266,11 @@ the new one — there's a window where in-flight jobs using the old token will f
 ANTHROPIC_API_KEY` with it, then revoke the old key from the console once you've confirmed the new
 one works (a `ref refresh` or a `@bot polish` with `POLISH_PROVIDER=claude` set are quick ways to
 force a real Claude call).
+
+**GitHub PAT**: generate a replacement fine-grained token with the same repository-only scope
+(Contents and Pull requests read/write), run `npx wrangler secret put GITHUB_TOKEN`, and revoke the
+old token from GitHub after a policy smoke test succeeds. Keep the repository private throughout;
+never temporarily broaden the token to work around a failed request.
 
 Neither rotation requires a redeploy — `wrangler secret put` updates the running Worker's binding
 directly.
