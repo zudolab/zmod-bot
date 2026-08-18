@@ -102,11 +102,41 @@ Edit the `vars` block of `wrangler.jsonc`:
 | `SLACK_ALLOWED_CHANNEL_IDS` | Comma-separated Slack channel ids the bot may act in. **Leave empty to allow every channel it's invited to** — see `src/slack/events.ts` `isAllowedChannel`. |
 | `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user ids allowed to run `ref new`/`refresh`/`restore` or click an approve/reject button. Anyone not listed gets a polite refusal, not a crash. |
 
-The remaining vars (`COMPOSE_PROVIDER`, `AUTHOR_PROVIDER`, `POLISH_PROVIDER`, `CLAUDE_MODEL`,
-`SITE_API_BASE`) already ship with working defaults and don't need to change for a first deploy.
+The remaining provider/model vars (`COMPOSE_PROVIDER`, `AUTHOR_PROVIDER`, `POLISH_PROVIDER`,
+`CLAUDE_MODEL`, `POLICY_PROVIDER`, `POLICY_MODEL`, `SITE_API_BASE`) already ship with working
+defaults and don't need to change for a first deploy. `GITHUB_REPO` is deliberately blank until
+the policy PR loop's separate release gate below is complete; do not configure its token or enable
+the command before that gate.
 Full meaning of every var: `docs/operations.md`.
 
 Commit the `vars` change — see `docs/operations.md` for which values are and aren't safe to commit.
+
+## Release gate — make the repository private before enabling policy edits
+
+The policy command sends the current policy document to the configured editor and creates a GitHub
+branch, commit, and pull request. The repository is public today, so this feature must remain
+disabled until the repository is private. Treat this as a release gate, not as a suggestion:
+
+- [ ] In GitHub, open **Settings → General → Danger Zone → Change repository visibility → Private**.
+- [ ] Confirm the repository is private in a fresh browser session or the repository header.
+- [ ] Create a fine-grained personal access token at **Settings → Developer settings → Personal
+      access tokens → Fine-grained tokens**.
+- [ ] Set **Resource owner** to the repository owner and **Repository access** to **Only select
+      repositories**, selecting this repository only.
+- [ ] Grant exactly **Repository permissions → Contents: Read and write** and **Pull requests:
+      Read and write**. Grant no other repository permissions.
+- [ ] Only after the private-repository check above, configure the token in the Worker:
+
+  ```bash
+  npx wrangler secret put GITHUB_TOKEN
+  ```
+
+- [ ] Set `GITHUB_REPO` to the exact `owner/name` repository value, deploy, and run the policy smoke
+      test in `docs/smoke-test.md` before telling operators that `@bot policy` is enabled.
+
+Never commit the PAT or put it in `wrangler.jsonc`, `vars`, an issue, or a log. If the repository
+cannot be made private yet, leave `GITHUB_TOKEN` unset and do not enable or advertise the policy
+command. The runtime rejects a missing token before making any GitHub request.
 
 ## 7. Add GitHub Actions repo secrets
 

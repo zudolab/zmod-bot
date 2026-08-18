@@ -80,7 +80,40 @@ and check the target Slack channel for exactly one "使い方" reply, not two. T
 doing its job — the second POST's insert conflicts, returns `null`, and no second job is ever
 created.
 
-## 2. A real provider call, end to end
+## 2. Policy command — admin refusal and a harmless dry run
+
+Run this only after the private-repository release gate in `docs/setup.md` is complete and
+`GITHUB_TOKEN`/`GITHUB_REPO` are configured. The policy command has no `--dry-run` flag; this dry
+run means that it creates a review-only PR on a bot branch and you deliberately do **not** merge it.
+
+### Non-admin refusal
+
+From a Slack user who is not in `SLACK_ADMIN_USER_IDS`, mention the bot in an allowed channel:
+
+```
+@zmod-bot policy 返信を少し簡潔にする
+```
+
+Expect a threaded reply saying `この操作には管理者権限が必要です。`. Confirm there is no new
+`policy_update` job and no GitHub branch, commit, or pull request. This refusal happens before the
+durable job write; a failed refusal post is logged and does not create remote state.
+
+### Admin dry run
+
+As an admin, make one small, reversible request:
+
+```
+@zmod-bot policy 必要な場合のみ、簡潔な補足を加えます。
+```
+
+Expect a `200` Slack acknowledgement, then a reply containing a GitHub pull-request URL. Verify
+that the PR branch is named `policy-update/job-<id>`, its diff contains only
+`policy/reply-guidance.md`, and no merge has happened. If the editor returns `変更なし`, the bot
+posts `変更なしと判断しました。` and makes no GitHub write; retry with a wording request only if
+you need to exercise PR creation. Use the review checklist in `docs/operations.md`, then close and
+delete this smoke-test branch/PR without merging it.
+
+## 3. A real provider call, end to end
 
 This is the check the guard suite exists to make necessary but cannot make sufficient by itself: **a
 real Llama completion, run through the exact same guards a fake completion is tested against.**
