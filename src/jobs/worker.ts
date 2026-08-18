@@ -75,6 +75,7 @@ import {
   NO_PRODUCT_QUERY_REASON,
   parseCommand,
   USAGE_TEXT,
+  isAdminUser,
   type ArrivalPresetKey,
   type ReplyModifiers,
 } from "../slack/commands";
@@ -91,6 +92,20 @@ import {
   nextStateAfterFailure,
 } from "./queue";
 import { runRetentionSweep } from "./retention";
+import {
+  ensurePolicyPr as defaultEnsurePolicyPr,
+  getPolicyFile as defaultGetPolicyFile,
+  type EnsurePolicyPrInput,
+  type EnsurePolicyPrOutcome,
+  type GithubApiDeps,
+  type PolicyFile,
+} from "../github/api";
+import {
+  updatePolicy as defaultUpdatePolicy,
+  type PolicyUpdateDeps,
+  type PolicyUpdateInput,
+  type PolicyUpdateResult,
+} from "../policy/update";
 
 /** The shape of src/reply/compose.ts's composeReply — injected so tests can fake issue #13's (currently throwing) real implementation. See the module comment. */
 export type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
@@ -105,6 +120,9 @@ export interface RunDeliveryPassDeps {
   composeReply?: ComposeReplyFn;
   /** Injected polish step — defaults to the real src/reply/polish.ts polishText. See PolishFn. */
   polishText?: PolishFn;
+  getPolicyFile?: GetPolicyFileFn;
+  updatePolicy?: UpdatePolicyFn;
+  ensurePolicyPr?: EnsurePolicyPrFn;
 }
 
 export interface RunDeliveryPassResult {
@@ -120,6 +138,9 @@ export interface RunDeliveryPassResult {
  */
 /** Injected the same way as ComposeReplyFn, so tests never reach a provider. */
 export type PolishFn = (deps: PolishDeps, input: PolishInput) => Promise<PolishResult>;
+export type GetPolicyFileFn = (deps: GithubApiDeps) => Promise<PolicyFile>;
+export type UpdatePolicyFn = (deps: PolicyUpdateDeps, input: PolicyUpdateInput) => Promise<PolicyUpdateResult>;
+export type EnsurePolicyPrFn = (deps: GithubApiDeps, input: EnsurePolicyPrInput) => Promise<EnsurePolicyPrOutcome>;
 
 export type RunJobDeps = {
   fetch: FetchLike;
@@ -127,7 +148,45 @@ export type RunJobDeps = {
   sleep?: SleepFn;
   composeReply?: ComposeReplyFn;
   polishText?: PolishFn;
+  getPolicyFile?: GetPolicyFileFn;
+  updatePolicy?: UpdatePolicyFn;
+  ensurePolicyPr?: EnsurePolicyPrFn;
 };
+
+const POLICY_TITLE_PREFIX = "[policy] ";
+const POLICY_TITLE_MAX_CHARS = 60;
+const GITHUB_NEUTRALIZER = "\u200d";
+
+/** Single-line, control-free PR title with a 60-code-point ceiling including the prefix. */
+export function buildPolicyPrTitle(request: string): string {
+  const normalized = request.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const budget = POLICY_TITLE_MAX_CHARS - Array.from(POLICY_TITLE_PREFIX).length;
+  return POLICY_TITLE_PREFIX + Array.from(normalized).slice(0, budget).join("");
+}
+
+function neutralizeGithubReferences(text: string): string {
+  return text.replace(/[@#]/g, (character) => `${character}${GITHUB_NEUTRALIZER}`);
+}
+
+/** Quotes the request while preventing GitHub user mentions and issue references from firing. */
+export function buildPolicyPrBody(request: string, slackUserId: string): string {
+  const safeRequest = neutralizeGithubReferences(request.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, " "));
+  const quotedRequest = safeRequest.split("\n").map((line) => `> ${line}`).join("\n");
+  const safeUserId = neutralizeGithubReferences(slackUserId.replace(/[^A-Za-z0-9._-]/g, ""));
+  return [
+    "## Slack request",
+    "",
+    quotedRequest,
+    "",
+    `Requested by Slack user \`${safeUserId}\`.`,
+    "",
+    "Review note: this text is injected into the compose system prompt — review as production copy.",
+  ].join("\n");
+}
+
+function oneLineRequestEcho(request: string): string {
+  return escapeMrkdwn(request.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim());
+}
 
 /**
  * Strips a leading `<@BOT_ID>` mention, matching src/slack/events.ts
@@ -416,6 +475,59 @@ async function buildPolishJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
   );
 }
 
+/** Runs the admin-only policy rewrite and maps every typed outcome to a Japanese operational reply. */
+async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): Promise<SlackMessagePayload> {
+  const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
+  if (parsed.kind !== "policy_update") {
+    const reason = parsed.kind === "unknown" ? parsed.reason : USAGE_TEXT;
+    return buildTextMessagePayload(reason, "ポリシー更新コマンドを解釈できませんでした");
+  }
+  // Defense in depth: ingress already refuses non-admin policy mentions,
+  // but a manually inserted or legacy row must not gain GitHub access.
+  if (!isAdminUser(env, job.actor_user_id)) {
+    return buildTextMessagePayload("この操作には管理者権限が必要です。", "この操作には管理者権限が必要です。");
+  }
+
+  const githubDeps: GithubApiDeps = { token: env.GITHUB_TOKEN, repo: env.GITHUB_REPO, fetch: deps.fetch };
+  const getPolicyFile = deps.getPolicyFile ?? defaultGetPolicyFile;
+  const updatePolicy = deps.updatePolicy ?? defaultUpdatePolicy;
+  const ensurePolicyPr = deps.ensurePolicyPr ?? defaultEnsurePolicyPr;
+
+  const current = await getPolicyFile(githubDeps);
+  const proposal = await updatePolicy(
+    { env, fetch: deps.fetch, now: deps.now },
+    { currentDocument: current.text, request: parsed.request },
+  );
+
+  if (proposal.kind === "no_change") {
+    return buildTextMessagePayload("変更なしと判断しました。", "ポリシー変更なし");
+  }
+  if (proposal.kind === "rejected") {
+    return buildTextMessagePayload(
+      `更新案の検証に失敗しました（${proposal.reason}）。`,
+      "ポリシー更新案の検証に失敗しました",
+    );
+  }
+
+  const pull = await ensurePolicyPr(githubDeps, {
+    jobId: String(job.id),
+    newContent: proposal.document,
+    title: buildPolicyPrTitle(parsed.request),
+    body: buildPolicyPrBody(parsed.request, job.actor_user_id),
+  });
+  if (pull.kind === "conflict") {
+    return buildTextMessagePayload(
+      `既存のポリシーPRがオープン中です: ${escapeMrkdwn(pull.url)}`,
+      "既存のポリシーPRがあります",
+    );
+  }
+
+  return buildTextMessagePayload(
+    `ポリシー更新PRを用意しました: ${escapeMrkdwn(pull.url)}\n> ${oneLineRequestEcho(parsed.request)}`,
+    "ポリシー更新PRを用意しました",
+  );
+}
+
 async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<void> {
   let payload: SlackMessagePayload;
   switch (job.kind) {
@@ -431,6 +543,10 @@ async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<
     case "ref": {
       const repoDeps: RepoDeps = { db: env.DB, now: deps.now };
       payload = await buildRefCommandPayload(env, repoDeps, job);
+      break;
+    }
+    case "policy_update": {
+      payload = await buildPolicyJobPayload(env, job, deps);
       break;
     }
   }
@@ -592,6 +708,9 @@ export async function runDeliveryPass(deps: RunDeliveryPassDeps): Promise<RunDel
       // there is no type error, the real implementation just runs and
       // tests quietly exercise the provider instead of their fake.
       polishText: deps.polishText,
+      getPolicyFile: deps.getPolicyFile,
+      updatePolicy: deps.updatePolicy,
+      ensurePolicyPr: deps.ensurePolicyPr,
     });
     if (ok) succeeded++;
     else failed++;

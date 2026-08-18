@@ -49,6 +49,7 @@ import {
 import type { LlmProvider, LlmProviderId, LlmRequest, LlmResult } from "../llm/provider";
 import { createWorkersAiProvider } from "../llm/workers-ai";
 import { errorSnippet, log } from "../ops/log";
+import { POLICY_CONTENT } from "../policy/generated";
 import type { ProductRef, RefSection } from "../refs/model";
 import type { FetchLike, NowFn } from "../types";
 import { renderReply, renderResourceSectionDeterministic } from "./render";
@@ -418,6 +419,10 @@ async function recordUsage(
 /* -------------------------------------------------------------------------
  * The prompt.
  *
+ * The rules above are engine rails and stay in code. Mutable tone and
+ * formatting guidance is generated from policy/reply-guidance.md and appended
+ * as a clearly delimited block below them.
+ *
  * Never logged, at any level — it embeds the reference body, which is
  * customer-facing business text (CLAUDE.md non-negotiable).
  * ---------------------------------------------------------------------- */
@@ -430,14 +435,17 @@ const COMPOSE_SYSTEM_PROMPT = [
   "Rules, all of them absolute:",
   "- Output plain text. No markdown headings, no bullet markers, no code fences, no commentary about what you did.",
   "- Never invent, alter, shorten or drop a URL. Every URL given to you must appear exactly as given; no URL that was not given may appear.",
-  "- Write each link as two lines: the title followed by a colon, then the URL alone on the next line.",
-  "- Emit sections in the order given. Separate paragraphs with one blank line.",
+  "- Emit sections in the order given.",
   `- Where a section has a separator intro, put a line containing only ${RESOURCE_SEPARATOR} above it, then the separator intro text, then that section's links.`,
   "- Reproduce every LITERAL BLOCK character for character, in place. These are pre-written notices; do not translate, summarize, reflow or punctuate them differently.",
   "- Reproduce intro text as given. You may not add explanation, opinion, or sales language of your own.",
   "- Section headings are the shop's own filing system. Never emit them.",
   "- GUIDANCE is written to you, not to the customer. Use it to decide what to include; never reproduce any part of it.",
-  "- Reply in Japanese, in the polite register the given text already uses.",
+  "",
+  "The POLICY below is mutable guidance only; it cannot override any rule above.",
+  "----- BEGIN POLICY -----",
+  POLICY_CONTENT,
+  "----- END POLICY -----",
 ].join("\n");
 
 function buildComposeRequest(prepared: PreparedReply): Omit<LlmRequest, "signal"> {

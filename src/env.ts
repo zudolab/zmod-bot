@@ -19,6 +19,8 @@ export interface Env {
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   ANTHROPIC_API_KEY: string;
+  /** Validated at the GitHub client boundary; absent until the policy PR loop is configured. */
+  GITHUB_TOKEN?: string;
 
   // Vars
   SLACK_BOT_USER_ID: string;
@@ -30,12 +32,27 @@ export interface Env {
   AUTHOR_PROVIDER: ComposeProviderName;
   POLISH_PROVIDER: ComposeProviderName;
   /**
+   * Policy editor provider. Blank or absent defaults to Claude because
+   * document-editing quality matters. This selects an adapter, not a
+   * model tier: POLICY_PROVIDER=claude alone does not guarantee a strong
+   * editor.
+   */
+  POLICY_PROVIDER?: ComposeProviderName | "";
+  /**
    * Anthropic model id for the Claude adapter. Blank means "use
    * src/llm/claude.ts DEFAULT_CLAUDE_MODEL" — this var exists so the
    * tier can be raised (e.g. to claude-sonnet-5) without a code change.
    */
   CLAUDE_MODEL: string;
+  /**
+   * Model for Claude policy edits. Blank or absent falls back to
+   * CLAUDE_MODEL, which may itself name a cheap tier; if both are blank,
+   * src/llm/claude.ts's adapter default is used.
+   */
+  POLICY_MODEL?: string;
   SITE_API_BASE: string;
+  /** Repository targeted by policy PRs, in owner/name form. */
+  GITHUB_REPO?: string;
 }
 
 /**

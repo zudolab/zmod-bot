@@ -10,6 +10,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "policy:build": "node --experimental-transform-types --disable-warning=ExperimentalWarning scripts/build-policy.mjs",
+    "predev": "pnpm policy:build",
+    "predeploy": "pnpm policy:build",
+    "pretypecheck": "pnpm policy:build",
+    "pretest": "pnpm policy:build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

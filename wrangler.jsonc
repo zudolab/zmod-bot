@@ -42,7 +42,7 @@
   // in CI with no `.dev.vars` present. Real values: `wrangler secret put
   // <NAME>`, never committed. See .dev.vars.example for local dev.
   "secrets": {
-    "required": ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "ANTHROPIC_API_KEY"]
+    "required": ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"]
   },
 
   "vars": {
@@ -65,16 +65,27 @@
     //   compose (every reply, assemble an existing ref's section)  -> Workers AI
     //   author  (rare — write a brand-new ref from scratch)        -> Claude
     //   polish  (occasional — reflow arbitrary pasted JA)          -> Workers AI
+    //   policy  (rare — edit the compose-policy document)          -> Claude
     "COMPOSE_PROVIDER": "workers-ai",
     "AUTHOR_PROVIDER": "claude",
     "POLISH_PROVIDER": "workers-ai",
+    // Policy document editing defaults to Claude for quality. This only
+    // chooses the adapter; the model fallback chain below still controls
+    // which Claude tier actually serves the edit.
+    "POLICY_PROVIDER": "claude",
 
     // Anthropic model id for the Claude adapter. Left blank on purpose:
     // blank falls back to src/llm/claude.ts DEFAULT_CLAUDE_MODEL
     // (claude-haiku-4-5), so the default lives in exactly one place. Set
     // it to raise the tier (e.g. "claude-sonnet-5") without a code change.
     "CLAUDE_MODEL": "",
+    // Policy Claude model: blank -> CLAUDE_MODEL -> the Claude adapter's
+    // DEFAULT_CLAUDE_MODEL. Set this explicitly for a stronger editor.
+    "POLICY_MODEL": "",
 
-    "SITE_API_BASE": "https://takazudomodular.com"
+    "SITE_API_BASE": "https://takazudomodular.com",
+
+    // Repository targeted by the policy PR loop, in owner/name form.
+    "GITHUB_REPO": ""
   }
 }
