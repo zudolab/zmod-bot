@@ -111,7 +111,7 @@ const BINDING_FIELDS = new Set(["DB", "AI"]);
 
 /**
  * Every top-level property name declared on the `Env` interface —
- * matched as `  NAME:` at exactly two-space indent, which a doc-comment
+ * matched as `  NAME:` / `  NAME?:` at exactly two-space indent, which a doc-comment
  * line (`  /**`, `  //`, `  * ...`) never satisfies since none of them
  * start with an uppercase letter.
  */
@@ -122,7 +122,7 @@ function extractEnvInterfaceFields(): string[] {
   const end = envTsRaw.indexOf("\n}", bodyStart);
   if (end === -1) throw new Error("could not find the closing `}` of the Env interface in src/env.ts");
   const body = envTsRaw.slice(bodyStart, end);
-  return [...body.matchAll(/^ {2}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]!);
+  return [...body.matchAll(/^ {2}([A-Z][A-Z0-9_]*)\??:/gm)].map((match) => match[1]!);
 }
 
 /** Every `env.NAME` / `deps.env.NAME` / `context.env.NAME` reference across non-test src files. */

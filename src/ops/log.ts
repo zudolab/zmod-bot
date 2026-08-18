@@ -33,13 +33,15 @@ const TRUNCATION_MARKER = "…(truncated)";
 
 /**
  * Credential shapes this repo could actually emit into a log: Anthropic
- * keys, Slack tokens, and an `Authorization: Bearer` value echoed back
+ * keys, Slack tokens, GitHub PATs, and an `Authorization: Bearer` value echoed back
  * inside an upstream error body. Masked before truncation, because
  * truncation alone would still leave a usable prefix.
  */
 const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   /sk-ant-[A-Za-z0-9_-]+/g,
   /x(?:ox[abeprs]|app)-[A-Za-z0-9-]+/g,
+  /ghp_[A-Za-z0-9_]+/g,
+  /github_pat_[A-Za-z0-9_]+/g,
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
 ];
 

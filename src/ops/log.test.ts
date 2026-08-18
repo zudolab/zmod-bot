@@ -22,6 +22,8 @@ describe("redactCredentials", () => {
     ["sk-ant-api03-AbCd_1234-XYZ", "an Anthropic key"],
     ["xoxb-1234567890-abcdefg", "a Slack bot token"],
     ["xapp-1-A01-999-deadbeef", "a Slack app token"],
+    ["ghp_abcdefghijklmnopqrstuvwxyz1234567890", "a classic GitHub PAT"],
+    ["github_pat_11ABCDEF_abcdefghijklmnopqrstuvwxyz", "a fine-grained GitHub PAT"],
     ["Bearer eyJhbGciOi.J9.sig-Value", "a bearer header value"],
   ])("masks %s (%s)", (credential) => {
     const masked = redactCredentials(`upstream said: ${credential} is invalid`);

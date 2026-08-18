@@ -19,6 +19,8 @@ export interface Env {
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   ANTHROPIC_API_KEY: string;
+  /** Validated at the GitHub client boundary; absent until the policy PR loop is configured. */
+  GITHUB_TOKEN?: string;
 
   // Vars
   SLACK_BOT_USER_ID: string;
@@ -36,6 +38,8 @@ export interface Env {
    */
   CLAUDE_MODEL: string;
   SITE_API_BASE: string;
+  /** Repository targeted by policy PRs, in owner/name form. */
+  GITHUB_REPO?: string;
 }
 
 /**

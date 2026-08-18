@@ -4,3 +4,4 @@
 SLACK_BOT_TOKEN=xoxb-replace-me
 SLACK_SIGNING_SECRET=replace-me
 ANTHROPIC_API_KEY=sk-ant-replace-me
+GITHUB_TOKEN=github_pat_replace-me
