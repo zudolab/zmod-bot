@@ -42,7 +42,7 @@
   // in CI with no `.dev.vars` present. Real values: `wrangler secret put
   // <NAME>`, never committed. See .dev.vars.example for local dev.
   "secrets": {
-    "required": ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "ANTHROPIC_API_KEY"]
+    "required": ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"]
   },
 
   "vars": {
@@ -75,6 +75,9 @@
     // it to raise the tier (e.g. "claude-sonnet-5") without a code change.
     "CLAUDE_MODEL": "",
 
-    "SITE_API_BASE": "https://takazudomodular.com"
+    "SITE_API_BASE": "https://takazudomodular.com",
+
+    // Repository targeted by the policy PR loop, in owner/name form.
+    "GITHUB_REPO": ""
   }
 }
