@@ -75,6 +75,10 @@ There is a single-open-policy-PR rule across all policy jobs. If another `policy
 request is open, the new request makes no branch, content, or PR mutation and posts the existing PR
 link as a conflict. Review and merge the open PR first, or clear the stale PR as described below.
 
+The stash service allows 60 writes per 60 seconds shared by non-admin tokens; the policy editor
+also has a cap of 20 proposals per UTC day. The proposal route performs no remote retries, leaving
+headroom for later decision writes and other non-admin stash clients.
+
 ### Review checklist before merge
 
 The reviewer should confirm all of the following before merging a policy PR:
