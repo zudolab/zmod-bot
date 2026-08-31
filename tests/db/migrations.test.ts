@@ -27,6 +27,9 @@ describe("migrations/0001_init.sql", () => {
         "jobs",
         "usage_log",
         "policy_last_known_good",
+        "policy_proposal_leases",
+        "policy_decision_fences",
+        "policy_decisions",
       ]),
     );
   });
@@ -44,7 +47,7 @@ describe("migrations/0001_init.sql", () => {
     );
   });
 
-  it("0004/0005/0006/0007 apply cleanly: origin_job_id, jobs_thread_lookup, resolved_context, and last-known-good all exist", async () => {
+  it("0004/0005/0006/0007/0008 apply cleanly: origin_job_id, jobs_thread_lookup, resolved_context, last-known-good, and coordination state all exist", async () => {
     env = await createTestEnv();
 
     const refDraftColumns = await env.db.prepare("PRAGMA table_info(ref_drafts)").all<{ name: string }>();
@@ -60,6 +63,30 @@ describe("migrations/0001_init.sql", () => {
       "version",
       "etag",
       "confirmed_at",
+    ]);
+
+    const leaseColumns = await env.db.prepare("PRAGMA table_info(policy_proposal_leases)").all<{ name: string }>();
+    expect(leaseColumns.results.map((row) => row.name)).toEqual(["path", "owner_job_id", "generation", "expires_at"]);
+
+    const fenceColumns = await env.db.prepare("PRAGMA table_info(policy_decision_fences)").all<{ name: string }>();
+    expect(fenceColumns.results.map((row) => row.name)).toEqual(["change_set_id", "active_epoch", "state", "updated_at"]);
+
+    const decisionColumns = await env.db.prepare("PRAGMA table_info(policy_decisions)").all<{ name: string }>();
+    expect(decisionColumns.results.map((row) => row.name)).toEqual([
+      "change_set_id",
+      "decision_epoch",
+      "action",
+      "actor_user_id",
+      "channel_id",
+      "review_message_ts",
+      "remote_result",
+      "remote_code",
+      "remote_version",
+      "remote_commit_id",
+      "conflict_state",
+      "slack_update_completed",
+      "created_at",
+      "updated_at",
     ]);
   });
 
