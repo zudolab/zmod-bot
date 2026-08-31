@@ -224,6 +224,16 @@ export interface PolicyDecisionFenceRow {
   updated_at: number;
 }
 
+/** First authoritative rollback request identity, keyed by its durable job. */
+export interface PolicyRollbackAttemptRow {
+  job_id: number;
+  path: string;
+  target_version: number;
+  expected_version: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export const TABLE_NAMES = {
   productRefs: "product_refs",
   productRefAliases: "product_ref_aliases",
@@ -236,4 +246,5 @@ export const TABLE_NAMES = {
   policyProposalLeases: "policy_proposal_leases",
   policyDecisionFences: "policy_decision_fences",
   policyDecisions: "policy_decisions",
+  policyRollbackAttempts: "policy_rollback_attempts",
 } as const;

@@ -48,6 +48,7 @@ import type { Env } from "../env";
 import {
   claimJobs,
   completePolicyDecisionJob,
+  completePolicyStashCommandJob,
   getProductRefBySlug,
   recordResolvedContext,
   updateJobState,
@@ -509,7 +510,7 @@ async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
         stashApi: deps.stashApi,
         invalidatePolicyCache: deps.invalidatePolicyCache,
       },
-      { jobId: job.id, attempts: job.attempts, command: parsed.policyCommand },
+      { jobId: job.id, command: parsed.policyCommand },
     );
   }
 
@@ -702,19 +703,27 @@ async function deliverClaimedJob(
     if (!requeued) return false;
   }
 
-  if (job.kind === "policy_decision") {
+  const parsedPolicyCommand = job.kind === "policy_update"
+    ? parseCommand(job.raw_text, env.SLACK_BOT_USER_ID)
+    : undefined;
+  const isPolicyStashCommand = parsedPolicyCommand?.kind === "policy_update"
+    && parsedPolicyCommand.policyCommand !== undefined;
+
+  if (job.kind === "policy_decision" || isPolicyStashCommand) {
     try {
       // Keep the job pending through every external/durable checkpoint.
       // Cron can reclaim pending after lease expiry; composing/delivering
-      // are intentionally never used for this kind.
+      // are intentionally never used for these durable policy operations.
       await runJob(env, job, deps);
     } catch (error) {
       await recordFailure(repoDeps, job, claimToken, error);
       return false;
     }
-    const completed = await completePolicyDecisionJob(repoDeps, { id: job.id, claimToken });
+    const completed = job.kind === "policy_decision"
+      ? await completePolicyDecisionJob(repoDeps, { id: job.id, claimToken })
+      : await completePolicyStashCommandJob(repoDeps, { id: job.id, claimToken });
     if (!completed) {
-      log("warn", "jobs: policy decision completion fence rejected", { jobId: job.id });
+      log("warn", "jobs: durable policy completion fence rejected", { jobId: job.id });
     }
     return true;
   }

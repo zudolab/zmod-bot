@@ -68,8 +68,8 @@ export interface FakeStashState {
   changeSets: Map<string, FakeChangeSet>;
   commits: Map<string, JsonObject>;
   idempotency: Map<string, { canonicalBody: string; changeSetId: string }>;
-  /** Rollback idempotency is separate from change-set keys and includes the expected head version. */
-  rollbackIdempotency: Map<string, { path: string; toVersion: number; expectedVersion: number; result: JsonObject }>;
+  /** Rollback idempotency retains the pinned canonical request fingerprint. */
+  rollbackIdempotency: Map<string, { fingerprint: string; result: JsonObject }>;
   events: JsonObject[];
   approveConflicts: Map<string, FakeConflict[]>;
   approveRaceConflicts: Map<string, FakeConflict[]>;
@@ -120,6 +120,39 @@ function head(file: FakeFile | undefined): FakeVersion | null {
 
 function bodyBytes(body: string | null): number {
   return body === null ? 0 : new TextEncoder().encode(body).byteLength;
+}
+
+function canonicalJson(value: unknown): string {
+  const canonicalize = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(canonicalize);
+    if (candidate !== null && typeof candidate === "object") {
+      return Object.fromEntries(
+        Object.keys(candidate as Record<string, unknown>)
+          .sort()
+          .map((key) => [key, canonicalize((candidate as Record<string, unknown>)[key])]),
+      );
+    }
+    return candidate;
+  };
+  return JSON.stringify(canonicalize(value));
+}
+
+function rollbackFingerprint(
+  path: string,
+  input: { toVersion?: number; expectedVersion?: number; author?: string; message?: string; meta?: JsonObject },
+): string {
+  return canonicalJson({
+    op: "rollback",
+    path,
+    expectedVersion: input.expectedVersion,
+    bodyHash: null,
+    contentType: "text/plain; charset=utf-8",
+    toVersion: input.toVersion ?? null,
+    author: input.author ?? "",
+    message: input.message ?? "",
+    meta: input.meta ?? {},
+    skipIfUnchanged: false,
+  });
 }
 
 function currentFor(version: FakeVersion | null): {
@@ -512,15 +545,15 @@ export function createFakeStash(options: FakeStashOptions): {
     // Pinned Worker source: workers/stash/src/routes/files.ts:259-287 and schemas.ts:81-87 (rollback request/result transport shape).
     if (request.method === "POST" && rollbackMatch?.[1] !== undefined) {
       const path = decodeURIComponent(rollbackMatch[1]);
-      const inputBody = body as { toVersion?: number; expectedVersion?: number; author?: string; message?: string };
+      const inputBody = body as { toVersion?: number; expectedVersion?: number; author?: string; message?: string; meta?: JsonObject };
       const key = request.headers.get("Idempotency-Key");
       const prior = key === null ? undefined : state.rollbackIdempotency.get(key);
-      // The real write path hashes path + expectedVersion + toVersion for
-      // idempotency. A retry that observes a newer head therefore gets a
-      // key-reuse conflict; the policy worker converges from history before
-      // issuing that second POST.
+      // Pinned Worker source: workers/stash/src/d1/writes.ts:530-548 and
+      // packages/core/src/canonical.ts:34-46. Replay is checked before the
+      // live head and hashes every canonical rollback field/default.
+      const fingerprint = rollbackFingerprint(path, inputBody);
       if (prior !== undefined) {
-        if (prior.path !== path || prior.toVersion !== inputBody.toVersion || prior.expectedVersion !== inputBody.expectedVersion) {
+        if (prior.fingerprint !== fingerprint) {
           return error(422, "idempotency-key-reused", "Idempotency key was already used for a different rollback.");
         }
         return json(prior.result, 201, { "Idempotent-Replayed": "true" });
@@ -537,7 +570,7 @@ export function createFakeStash(options: FakeStashOptions): {
       const version: FakeVersion = { ...target, version: currentHead.version + 1, kind: "rollback", author: inputBody.author ?? "", message: inputBody.message ?? "", createdAt: now.toISOString(), rollbackOf: target.version };
       file.versions.push(version);
       const result = { commitId: makeId("cmt", state.nextCommit++, now), version: version.version, hash: version.hash, rollbackOf: target.version, identicalToHead: target.hash === currentHead.hash, changeId: state.nextChange++, createdAt: now.toISOString(), representation: "text", contentType: "text/plain; charset=utf-8", byteSize: bodyBytes(version.body), etag: version.hash };
-      if (key !== null) state.rollbackIdempotency.set(key, { path, toVersion: target.version, expectedVersion: inputBody.expectedVersion, result });
+      if (key !== null) state.rollbackIdempotency.set(key, { fingerprint, result });
       state.events.push({ type: "change", changeId: result.changeId, commitId: result.commitId, stash: state.stash, path, version: version.version, kind: "rollback", origin: eventOrigin(request), createdAt: result.createdAt });
       return json(result, 201);
     }
