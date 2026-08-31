@@ -98,6 +98,9 @@ function stripJsonComments(text: string): string {
 interface WranglerConfig {
   secrets: { required: string[] };
   vars: Record<string, unknown>;
+  d1_databases: Array<{ binding: string }>;
+  ai: { binding: string };
+  observability: { enabled: boolean };
 }
 
 const wranglerConfig = JSON.parse(stripJsonComments(wranglerJsoncRaw)) as WranglerConfig;
@@ -169,5 +172,24 @@ describe("Env interface / wrangler.jsonc parity (issue #18)", () => {
     expect(wranglerConfig.vars.POLICY_PROVIDER).toBe("claude");
     expect(wranglerConfig.vars.POLICY_MODEL).toBe("");
     expect(extractEnvInterfaceFields()).toEqual(expect.arrayContaining(["POLICY_PROVIDER", "POLICY_MODEL"]));
+  });
+
+  it("keeps stash credentials in secrets and stash location in vars", () => {
+    expect(wranglerConfig.secrets.required).toEqual(
+      expect.arrayContaining(["STASH_READ_TOKEN", "STASH_WRITE_TOKEN"]),
+    );
+    expect(Object.keys(wranglerConfig.vars)).toEqual(expect.arrayContaining(["STASH_BASE_URL", "STASH_NAME"]));
+    expect(wranglerConfig.vars).not.toHaveProperty("STASH_READ_TOKEN");
+    expect(wranglerConfig.vars).not.toHaveProperty("STASH_WRITE_TOKEN");
+    expect(wranglerConfig.secrets.required).not.toContain("STASH_BASE_URL");
+    expect(wranglerConfig.secrets.required).not.toContain("STASH_NAME");
+  });
+
+  it("keeps observability enabled and the two-binding architecture exact", () => {
+    expect(wranglerConfig.observability).toEqual({ enabled: true });
+    expect([
+      ...wranglerConfig.d1_databases.map(({ binding }) => binding),
+      wranglerConfig.ai.binding,
+    ]).toEqual(["DB", "AI"]);
   });
 });

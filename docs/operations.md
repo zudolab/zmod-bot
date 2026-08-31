@@ -5,10 +5,11 @@ PR loop, read the job queue and `usage_log`, retention, and token rotation.
 
 ## Secrets and vars
 
-Every name below is read somewhere under `src/**` (`src/env.ts`'s `Env` interface is the type-level
+Every existing runtime name below is read somewhere under `src/**` (`src/env.ts`'s `Env` interface is the type-level
 list; `tests/env-wrangler-drift.test.ts` fails CI if this table's two sources — `src/env.ts` and
 `wrangler.jsonc`'s `secrets.required`/`vars` — ever disagree with each other or with what the code
-actually reads).
+actually reads). The `STASH_*` names are declared ahead of the client so provisioning can happen
+before that implementation lands.
 
 ### Secrets (`wrangler secret put <NAME>`, never committed)
 
@@ -17,6 +18,8 @@ actually reads).
 | `SLACK_BOT_TOKEN` | Slack app → OAuth & Permissions → Bot User OAuth Token (`xoxb-…`), after Install to Workspace | Every Slack Web API call (`chat.postMessage`, `chat.postEphemeral`, `chat.update`, `views.open`) gets a `401` from Slack. Jobs still get created and retried (see "Job states" below), but delivery never succeeds — a job exhausts its 5 attempts and lands `dead`. |
 | `SLACK_SIGNING_SECRET` | Slack app → Basic Information → App Credentials → Signing Secret | `src/slack/verify.ts` throws on a blank secret, which both `POST /slack/events` and `POST /slack/interactions` turn into a `500 server misconfigured` for **every** request — including Slack's own `url_verification` challenge, so Event Subscriptions can't even be enabled (see `docs/setup.md` step 10). With a *wrong* (not blank) secret, every request instead gets `401 invalid signature`. |
 | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) → API Keys | The Claude adapter (`src/llm/claude.ts`) throws `LlmConfigurationError` on every call. For `compose`/`polish`, this is caught by the guard envelope and downgrades to the deterministic fallback (a reply/polish is still produced — see "Reading `usage_log`" below). Reference authoring (`ref new`/`ref refresh`) has **no fallback**: per issue #17's design, an authoring failure is reported to the operator, not silently downgraded, because there is no deterministic way to invent a reference. |
+| `STASH_READ_TOKEN` | Per-stash read token supplied by the stash service (`zhs_...`); mint it without an expiry by omitting both `expiresAt` and `ttlSeconds`. Use a per-stash token, never an admin token. | Stash-backed reads cannot authenticate once the stash client is enabled. |
+| `STASH_WRITE_TOKEN` | Per-stash write token supplied by the stash service (`zhs_...`); mint it without an expiry by omitting both `expiresAt` and `ttlSeconds`. Use a per-stash token, never an admin token. | Stash-backed writes cannot authenticate once the stash client is enabled. |
 | `GITHUB_TOKEN` | A fine-grained PAT created for this repository only; **Contents: Read and write** + **Pull requests: Read and write**, and nothing else. Configure with `npx wrangler secret put GITHUB_TOKEN` only after the repository-private release gate in `docs/setup.md`. | `@bot policy` fails before any GitHub request. Do not set this while the repository is public. Rotate it immediately if it is exposed; the policy loop does not log the token or upstream response bodies. |
 
 ### Vars (`wrangler.jsonc`'s `vars` block, plain values, safe to commit — none of these are credentials)
@@ -33,7 +36,12 @@ actually reads).
 | `CLAUDE_MODEL` | An Anthropic model id, e.g. `claude-sonnet-5` | Blank (the shipped default) falls back to `src/llm/claude.ts`'s `DEFAULT_CLAUDE_MODEL` (`claude-haiku-4-5`) — the one place that default lives. Set this to raise the tier without a code change. |
 | `POLICY_MODEL` | An Anthropic model id for policy edits | Blank/absent falls back to `CLAUDE_MODEL`, then to the Claude adapter's `DEFAULT_CLAUDE_MODEL`. It is ignored when `POLICY_PROVIDER=workers-ai`. |
 | `SITE_API_BASE` | `https://takazudomodular.com` (shipped default — leave as-is in production) | Base URL for the reference-authoring catalog/product-page/search fetches (`GET {SITE_API_BASE}/api/products`, `/api/search`, and product detail paths). A bad or unreachable site produces an authoring refusal; it never invents a reference. |
+| `STASH_BASE_URL` | Operator-set base URL for the provisioned stash service | Stash requests cannot reach the configured service. Leave blank until the stash is provisioned. |
+| `STASH_NAME` | Operator-set name of the stash this Worker uses | Stash requests cannot select their target. Leave blank until the stash is provisioned. |
 | `GITHUB_REPO` | The private repository in `owner/name` form, for example `zudolab/zmod-bot` | Missing or malformed configuration stops `@bot policy` before any GitHub request. There is no fallback: set it explicitly after the private-repository release gate. |
+
+Before provisioning the stash, record which Cloudflare account hosts it. A later service binding
+must target a Worker in that same account.
 
 ### Bindings (`wrangler.jsonc`, not secrets or vars)
 

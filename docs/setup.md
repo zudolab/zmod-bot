@@ -80,17 +80,20 @@ The response's `user_id` field is the value for `SLACK_BOT_USER_ID`.
 
 ## 5. Set the secrets
 
-Three secrets, deployed via `wrangler secret put` (never committed — `wrangler.jsonc`'s
+Five secrets, deployed via `wrangler secret put` (never committed — `wrangler.jsonc`'s
 `secrets.required` lists only the *names*):
 
 ```bash
 npx wrangler secret put SLACK_BOT_TOKEN        # the xoxb- token from step 3
 npx wrangler secret put SLACK_SIGNING_SECRET   # the signing secret from step 3
 npx wrangler secret put ANTHROPIC_API_KEY      # from console.anthropic.com
+npx wrangler secret put STASH_READ_TOKEN       # per-stash read token, zhs_...
+npx wrangler secret put STASH_WRITE_TOKEN      # per-stash write token, zhs_...
 ```
 
-For local dev, copy `.dev.vars.example` to `.dev.vars` (gitignored) and fill in the same three
-values there instead.
+The stash service must mint both tokens without an expiry: omit both `expiresAt` and `ttlSeconds`.
+These are per-stash tokens, never an admin token. For local dev, copy `.dev.vars.example` to
+`.dev.vars` (gitignored) and fill in the same five values there instead.
 
 ## 6. Set the vars
 
@@ -101,6 +104,8 @@ Edit the `vars` block of `wrangler.jsonc`:
 | `SLACK_BOT_USER_ID` | The id from step 4 |
 | `SLACK_ALLOWED_CHANNEL_IDS` | Comma-separated Slack channel ids the bot may act in. **Leave empty to allow every channel it's invited to** — see `src/slack/events.ts` `isAllowedChannel`. |
 | `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user ids allowed to run `ref new`/`refresh`/`restore` or click an approve/reject button. Anyone not listed gets a polite refusal, not a crash. |
+| `STASH_BASE_URL` | Base URL of the provisioned stash service. Leave blank until the stash is ready. |
+| `STASH_NAME` | Name of the stash this Worker uses. Leave blank until the stash is ready. |
 
 The remaining provider/model vars (`COMPOSE_PROVIDER`, `AUTHOR_PROVIDER`, `POLISH_PROVIDER`,
 `CLAUDE_MODEL`, `POLICY_PROVIDER`, `POLICY_MODEL`, `SITE_API_BASE`) already ship with working
@@ -108,6 +113,9 @@ defaults and don't need to change for a first deploy. `GITHUB_REPO` is deliberat
 the policy PR loop's separate release gate below is complete; do not configure its token or enable
 the command before that gate.
 Full meaning of every var: `docs/operations.md`.
+
+Record which Cloudflare account hosts the stash. A later service binding requires the stash and
+Worker to be in the same account.
 
 Commit the `vars` change — see `docs/operations.md` for which values are and aren't safe to commit.
 

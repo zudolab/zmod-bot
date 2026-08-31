@@ -42,6 +42,8 @@ const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   /x(?:ox[abeprs]|app)-[A-Za-z0-9-]+/g,
   /ghp_[A-Za-z0-9_]+/g,
   /github_pat_[A-Za-z0-9_]+/g,
+  /zhs_[A-Za-z0-9_-]+/g,
+  /tok_[0-9a-f]{32}/g,
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
 ];
 
