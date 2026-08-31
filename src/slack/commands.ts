@@ -47,6 +47,11 @@ export interface ReplyModifiers {
   arrival: ArrivalPresetKey | null;
 }
 
+/** The two stash-only administrative operations carried by a policy job. */
+export type PolicyCommand =
+  | { operation: "history" }
+  | { operation: "rollback"; version: number };
+
 export type ParsedCommand =
   | ({ kind: "reply"; query: string } & ReplyModifiers)
   /**
@@ -71,7 +76,12 @@ export type ParsedCommand =
   | { kind: "ref_refresh"; slug: string }
   | { kind: "ref_restore"; slug: string; version: number }
   | { kind: "polish"; text: string }
-  | { kind: "policy_update"; request: string }
+  /**
+   * Policy history/rollback deliberately retain the durable `policy_update`
+   * job kind. `policyCommand` is an in-memory parser detail so the jobs table
+   * and every unrelated dispatcher keep their existing shape.
+   */
+  | { kind: "policy_update"; request: string; policyCommand?: PolicyCommand }
   | { kind: "help" }
   /** Unparseable input or an unknown flag — `reason` is a ready-to-post Japanese explanation, never a stack trace (issue #14: "never a silent no-op and never a stack trace"). */
   | { kind: "unknown"; raw: string; reason: string };
@@ -85,6 +95,8 @@ export const USAGE_TEXT = [
   "`@bot --discord` / `@bot 明日` — 同じスレッド内なら、直前に返信した製品のまま指定だけを付け直します（フラグは毎回指定し直しです）",
   "`@bot polish` の次の行に整えたい文章を貼り付けます",
   "`@bot policy <変更内容>` — 返信ポリシーの更新PRを作成します（管理者のみ）",
+  "`@bot policy history` — 返信ポリシーの履歴を表示します（管理者のみ）",
+  "`@bot policy rollback <バージョン番号>` — 指定したポリシーのバージョンへ戻します（管理者のみ）",
   "`@bot ref show|history|restore|new|refresh <slugまたは製品名> [引数]` — 製品リファレンスの管理コマンド",
   "`@bot help` — この使い方を表示します",
 ].join("\n");
@@ -148,6 +160,31 @@ export function parseCommand(rawText: string, botUserId: string): ParsedCommand 
   const head = headTokens[0]?.toLowerCase() ?? "";
 
   if (head === "help") return { kind: "help" };
+
+  // These are intentionally recognized before the prose-shaped policy
+  // update grammar. They keep the durable job kind as `policy_update` while
+  // preventing a mistyped rollback from becoming a GitHub edit request.
+  if (/^policy[ \t]+history(?:[ \t\r\n]|$)/i.test(body)) {
+    if (/^policy history$/i.test(body)) {
+      return { kind: "policy_update", request: "history", policyCommand: { operation: "history" } };
+    }
+    return unknownCommand(rawText, "policy history は引数なしで指定してください。");
+  }
+  if (/^policy[ \t]+rollback(?:[ \t\r\n]|$)/i.test(body)) {
+    const match = /^policy rollback ([0-9]+)$/i.exec(body);
+    if (match === null) {
+      return unknownCommand(rawText, "policy rollback <バージョン番号> の形式で指定してください。");
+    }
+    const versionToken = match[1]!;
+    if (!/^[1-9]\d*$/.test(versionToken)) {
+      return unknownCommand(rawText, "policy rollback のバージョン番号は正の整数で指定してください。");
+    }
+    const version = Number(versionToken);
+    if (!Number.isSafeInteger(version) || version < 1) {
+      return unknownCommand(rawText, "policy rollback のバージョン番号が大きすぎます。");
+    }
+    return { kind: "policy_update", request: `rollback ${version}`, policyCommand: { operation: "rollback", version } };
+  }
 
   // Unlike the tokenized reply/ref grammars, a policy request is prose:
   // preserve every byte after the required command separator so the

@@ -68,6 +68,8 @@ export interface FakeStashState {
   changeSets: Map<string, FakeChangeSet>;
   commits: Map<string, JsonObject>;
   idempotency: Map<string, { canonicalBody: string; changeSetId: string }>;
+  /** Rollback idempotency is separate from change-set keys and includes the expected head version. */
+  rollbackIdempotency: Map<string, { path: string; toVersion: number; expectedVersion: number; result: JsonObject }>;
   events: JsonObject[];
   approveConflicts: Map<string, FakeConflict[]>;
   approveRaceConflicts: Map<string, FakeConflict[]>;
@@ -166,6 +168,7 @@ function makeState(now: Date, seed: boolean): FakeStashState {
     changeSets: new Map(),
     commits: new Map(),
     idempotency: new Map(),
+    rollbackIdempotency: new Map(),
     events: [],
     approveConflicts: new Map(),
     approveRaceConflicts: new Map(),
@@ -510,6 +513,18 @@ export function createFakeStash(options: FakeStashOptions): {
     if (request.method === "POST" && rollbackMatch?.[1] !== undefined) {
       const path = decodeURIComponent(rollbackMatch[1]);
       const inputBody = body as { toVersion?: number; expectedVersion?: number; author?: string; message?: string };
+      const key = request.headers.get("Idempotency-Key");
+      const prior = key === null ? undefined : state.rollbackIdempotency.get(key);
+      // The real write path hashes path + expectedVersion + toVersion for
+      // idempotency. A retry that observes a newer head therefore gets a
+      // key-reuse conflict; the policy worker converges from history before
+      // issuing that second POST.
+      if (prior !== undefined) {
+        if (prior.path !== path || prior.toVersion !== inputBody.toVersion || prior.expectedVersion !== inputBody.expectedVersion) {
+          return error(422, "idempotency-key-reused", "Idempotency key was already used for a different rollback.");
+        }
+        return json(prior.result, 201, { "Idempotent-Replayed": "true" });
+      }
       const file = state.files.get(path);
       const currentHead = head(file);
       if (file === undefined || currentHead === null) return error(404, "not-found", "File not found.");
@@ -522,6 +537,7 @@ export function createFakeStash(options: FakeStashOptions): {
       const version: FakeVersion = { ...target, version: currentHead.version + 1, kind: "rollback", author: inputBody.author ?? "", message: inputBody.message ?? "", createdAt: now.toISOString(), rollbackOf: target.version };
       file.versions.push(version);
       const result = { commitId: makeId("cmt", state.nextCommit++, now), version: version.version, hash: version.hash, rollbackOf: target.version, identicalToHead: target.hash === currentHead.hash, changeId: state.nextChange++, createdAt: now.toISOString(), representation: "text", contentType: "text/plain; charset=utf-8", byteSize: bodyBytes(version.body), etag: version.hash };
+      if (key !== null) state.rollbackIdempotency.set(key, { path, toVersion: target.version, expectedVersion: inputBody.expectedVersion, result });
       state.events.push({ type: "change", changeId: result.changeId, commitId: result.commitId, stash: state.stash, path, version: version.version, kind: "rollback", origin: eventOrigin(request), createdAt: result.createdAt });
       return json(result, 201);
     }
