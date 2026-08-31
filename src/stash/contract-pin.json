@@ -1,0 +1,222 @@
+{
+  "stashCommit": "89f72efb79fc7890597aa32b632939ae9e4fb46c",
+  "behavioralCoverage": "structure-only; blind to actual Worker behavior",
+  "sources": {
+    "routes": "packages/core/src/routes.ts:14-139",
+    "limits": "packages/core/src/limits.ts:1-36",
+    "errorCodes": "packages/core/src/errors.ts:3-32"
+  },
+  "routes": [
+    {
+      "id": "me",
+      "method": "GET",
+      "template": "/v1/me",
+      "principal": "any",
+      "statuses": [
+        200,
+        401,
+        429
+      ]
+    },
+    {
+      "id": "getFile",
+      "method": "GET",
+      "template": "/v1/stashes/:stash/files/*path",
+      "principal": "read",
+      "statuses": [
+        200,
+        304,
+        400,
+        401,
+        404,
+        429,
+        500
+      ]
+    },
+    {
+      "id": "createChangeSet",
+      "method": "POST",
+      "template": "/v1/stashes/:stash/change-sets",
+      "principal": "write",
+      "statuses": [
+        201,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        422,
+        429,
+        500
+      ]
+    },
+    {
+      "id": "listChangeSets",
+      "method": "GET",
+      "template": "/v1/stashes/:stash/change-sets",
+      "principal": "read",
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        429
+      ]
+    },
+    {
+      "id": "getChangeSet",
+      "method": "GET",
+      "template": "/v1/stashes/:stash/change-sets/:id",
+      "principal": "read",
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        429
+      ]
+    },
+    {
+      "id": "getChangeSetDiff",
+      "method": "GET",
+      "template": "/v1/stashes/:stash/change-sets/:id/diff",
+      "principal": "read",
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ]
+    },
+    {
+      "id": "approveChangeSet",
+      "method": "POST",
+      "template": "/v1/stashes/:stash/change-sets/:id/approve",
+      "principal": "write",
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        429,
+        500
+      ]
+    },
+    {
+      "id": "rejectChangeSet",
+      "method": "POST",
+      "template": "/v1/stashes/:stash/change-sets/:id/reject",
+      "principal": "write",
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        429
+      ]
+    },
+    {
+      "id": "getHistory",
+      "method": "GET",
+      "template": "/v1/stashes/:stash/history/*path",
+      "principal": "read",
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        429
+      ]
+    },
+    {
+      "id": "rollbackFile",
+      "method": "POST",
+      "template": "/v1/stashes/:stash/rollback/*path",
+      "principal": "write",
+      "statuses": [
+        201,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        422,
+        429,
+        500
+      ]
+    }
+  ],
+  "limits": {
+    "MAX_BODY_BYTES": 5000000,
+    "JSON_INLINE_MAX_BYTES": 5000000,
+    "D1_INLINE_MAX_BYTES": 524288,
+    "D1_INLINE_MAX_BYTES_CEILING": 1500000,
+    "HTTP_REQUEST_MAX_BYTES": 100000000,
+    "SINGLE_UPLOAD_MAX_BYTES": 33554432,
+    "MAX_FILE_BYTES": 100000000,
+    "MAX_FILE_BYTES_CEILING": 1073741824,
+    "MAX_PATH_BYTES": 512,
+    "MAX_META_BYTES": 4096,
+    "MAX_AUTHOR_BYTES": 200,
+    "MAX_MESSAGE_BYTES": 2000,
+    "LIST_LIMIT_DEFAULT": 50,
+    "LIST_LIMIT_MAX": 200,
+    "DIFF_MAX_BYTES": 524288,
+    "R2_SPILL_BYTES": 524288,
+    "DIFF_TIMEOUT_MS": 2000,
+    "DIFF_MAX_EDIT_LENGTH": 50000,
+    "DIFF_MAX_INTRALINE_LENGTH": 800,
+    "DIFF_MAX_INTRALINE_CHARS": 200000,
+    "IDEMPOTENCY_KEY_MAX_CHARS": 200,
+    "IDEMPOTENCY_TTL_DAYS": 7,
+    "BODY_LIMIT_BYTES": 33554432,
+    "MULTIPART_PART_BYTES": 8388608,
+    "MULTIPART_PRODUCTION_MIN_PART_BYTES": 5242880,
+    "MAX_MULTIPART_PARTS": 10000,
+    "MAX_OPEN_UPLOAD_SESSIONS": 8,
+    "MAX_RESERVED_UPLOAD_BYTES": 500000000,
+    "UPLOAD_SESSION_TTL_SECONDS": 86400,
+    "MAX_IMPORT_VERSIONS": 20,
+    "MAX_COMMIT_ENTRIES": 20,
+    "MAX_COMMIT_INLINE_BYTES": 5000000,
+    "COMMIT_DIFF_INLINE_ENTRIES": 8
+  },
+  "errorCodes": [
+    "validation",
+    "invalid-path",
+    "body-not-well-formed",
+    "unauthorized",
+    "scope",
+    "not-found",
+    "file-deleted",
+    "version-not-found",
+    "stale",
+    "exists",
+    "already-deleted",
+    "gc-busy",
+    "already-rotated",
+    "token-expired",
+    "commit-conflict",
+    "change-set-expired",
+    "change-set-closed",
+    "rate-limited",
+    "payload-too-large",
+    "idempotency-key-reused",
+    "rollback-target-tombstone",
+    "unsupported-representation",
+    "upload-session-not-open",
+    "upload-session-expired",
+    "upload-size-mismatch",
+    "upload-hash-mismatch",
+    "range-not-satisfiable",
+    "internal"
+  ]
+}
