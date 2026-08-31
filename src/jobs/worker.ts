@@ -47,6 +47,7 @@
 import type { Env } from "../env";
 import {
   claimJobs,
+  completePolicyDecisionJob,
   getProductRefBySlug,
   recordResolvedContext,
   updateJobState,
@@ -108,6 +109,7 @@ import {
 } from "../policy/update";
 import { runStashPolicyProposal } from "../policy/proposal";
 import type { StashApi } from "../stash/api";
+import { runPolicyDecisionJob } from "../policy/decision";
 
 /** The shape of src/reply/compose.ts's composeReply — injected so tests can fake issue #13's (currently throwing) real implementation. See the module comment. */
 export type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
@@ -126,6 +128,7 @@ export interface RunDeliveryPassDeps {
   updatePolicy?: UpdatePolicyFn;
   ensurePolicyPr?: EnsurePolicyPrFn;
   stashApi?: StashApi;
+  invalidatePolicyCache?: () => void;
 }
 
 export interface RunDeliveryPassResult {
@@ -155,6 +158,7 @@ export type RunJobDeps = {
   updatePolicy?: UpdatePolicyFn;
   ensurePolicyPr?: EnsurePolicyPrFn;
   stashApi?: StashApi;
+  invalidatePolicyCache?: () => void;
 };
 
 const POLICY_TITLE_PREFIX = "[policy] ";
@@ -572,6 +576,10 @@ async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<
       payload = await buildPolicyJobPayload(env, job, deps);
       break;
     }
+    case "policy_decision": {
+      await runPolicyDecisionJob(env, job, deps);
+      return;
+    }
   }
 
   const slackDeps: SlackApiDeps = {
@@ -677,6 +685,23 @@ async function deliverClaimedJob(
     if (!requeued) return false;
   }
 
+  if (job.kind === "policy_decision") {
+    try {
+      // Keep the job pending through every external/durable checkpoint.
+      // Cron can reclaim pending after lease expiry; composing/delivering
+      // are intentionally never used for this kind.
+      await runJob(env, job, deps);
+    } catch (error) {
+      await recordFailure(repoDeps, job, claimToken, error);
+      return false;
+    }
+    const completed = await completePolicyDecisionJob(repoDeps, { id: job.id, claimToken });
+    if (!completed) {
+      log("warn", "jobs: policy decision completion fence rejected", { jobId: job.id });
+    }
+    return true;
+  }
+
   const toComposing = await transition(repoDeps, job, claimToken, "composing");
   if (!toComposing) return false;
 
@@ -735,6 +760,7 @@ export async function runDeliveryPass(deps: RunDeliveryPassDeps): Promise<RunDel
       updatePolicy: deps.updatePolicy,
       ensurePolicyPr: deps.ensurePolicyPr,
       stashApi: deps.stashApi,
+      invalidatePolicyCache: deps.invalidatePolicyCache,
     });
     if (ok) succeeded++;
     else failed++;

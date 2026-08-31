@@ -90,8 +90,8 @@ export interface SlackEventReceiptRow {
   received_at: number;
 }
 
-/** Logical worker route stored in jobs.kind (TEXT): customer reply, polish, reference management, or admin policy PR. */
-export type JobKind = "reply" | "polish" | "ref" | "policy_update";
+/** Logical worker route stored in jobs.kind (TEXT), including durable policy proposals and decisions. */
+export type JobKind = "reply" | "polish" | "ref" | "policy_update" | "policy_decision";
 
 /** pending -> composing -> delivering -> done | failed | dead (see src/jobs/queue.ts). */
 export type JobState = "pending" | "composing" | "delivering" | "done" | "failed" | "dead";

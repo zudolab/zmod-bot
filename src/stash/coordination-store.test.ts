@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { RepoDeps } from "../db/repos";
 import { createTestEnv, type TestEnvHandle } from "../../tests/helpers/test-env";
+import { createMockD1 } from "../db/test-support";
 import {
   acquirePolicyProposalLease,
   getPolicyProposalLease,
@@ -130,12 +131,30 @@ describe("policy coordination store", () => {
     const jobs = await deps.db
       .prepare("SELECT event_id, kind FROM jobs WHERE event_id LIKE 'policy-decision:%' ORDER BY event_id")
       .all<{ event_id: string; kind: string }>();
-    expect(jobs.results).toEqual([{ event_id: "policy-decision:cs-1:1", kind: "policy_update" }]);
+    expect(jobs.results).toEqual([{ event_id: "policy-decision:cs-1:1", kind: "policy_decision" }]);
 
     const receipts = await deps.db
       .prepare("SELECT event_id FROM slack_event_receipts WHERE event_id LIKE 'click-%' ORDER BY event_id")
       .all<{ event_id: string }>();
     expect(receipts.results.map((row) => row.event_id)).toEqual(["click-1", "click-2", "click-3"]);
+  });
+
+  it("treats decision-created without job-created as an invariant failure", async () => {
+    const db = createMockD1({
+      onQuery: ({ query }) => {
+        if (query.includes("INSERT INTO policy_decisions")) return { meta: { changes: 1 } };
+        if (query.includes("INSERT INTO jobs")) return { meta: { changes: 0 } };
+        return { meta: { changes: 1 } };
+      },
+    });
+    await expect(recordPolicyDecision({ db, now: () => new Date(nowMs) }, {
+      changeSetId: "cs-invariant",
+      action: "approve",
+      actorUserId: "U_ADMIN",
+      channelId: "C_REVIEW",
+      reviewMessageTs: "1.000001",
+      receiptId: "click-invariant",
+    })).rejects.toThrow("decision created without job");
   });
 
   it("reopens exactly one reject epoch after a delivered approval conflict", async () => {
@@ -167,13 +186,14 @@ describe("policy coordination store", () => {
     expect(
       (await recordPolicyDecision(deps, {
         changeSetId: "cs-conflict",
-        action: "approve",
+        action: "reject",
         actorUserId: "U_OTHER",
         channelId: "C_REVIEW",
         reviewMessageTs: "1700000000.000001",
         receiptId: "conflict-click-before-preview",
       })).reason,
     ).toBe("conflict-pending");
+    nowMs = 1_100;
     const reopened = await markPolicyDecisionSlackUpdateComplete(deps, {
       changeSetId: "cs-conflict",
       decisionEpoch: 1,
@@ -186,6 +206,23 @@ describe("policy coordination store", () => {
       })).recorded,
     ).toBe(false);
 
+    nowMs = 1_200;
+    const replayedLosingReject = await recordPolicyDecision(deps, {
+      changeSetId: "cs-conflict",
+      action: "reject",
+      actorUserId: "U_OTHER",
+      channelId: "C_REVIEW",
+      reviewMessageTs: "1700000000.000001",
+      receiptId: "conflict-click-before-preview",
+    });
+    expect(replayedLosingReject).toMatchObject({
+      receiptRecorded: false,
+      conflictReopened: false,
+      decisionCreated: false,
+      jobCreated: false,
+      decisionEpoch: 1,
+    });
+
     const approveAgain = await recordPolicyDecision(deps, {
       changeSetId: "cs-conflict",
       action: "approve",
@@ -196,6 +233,7 @@ describe("policy coordination store", () => {
     });
     expect(approveAgain).toMatchObject({ receiptRecorded: true, decisionCreated: false, jobCreated: false, reason: "conflict-approve-blocked" });
 
+    nowMs = 1_300;
     const reject = await recordPolicyDecision(deps, {
       changeSetId: "cs-conflict",
       action: "reject",

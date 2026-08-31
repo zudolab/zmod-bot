@@ -726,6 +726,28 @@ export async function updateJobState(deps: RepoDeps, input: UpdateJobStateInput)
 }
 
 /**
+ * Completes a durable policy decision directly from its reclaimable pending
+ * state. Decision I/O deliberately never enters composing/delivering: a
+ * crash in either generic state could not be reclaimed by cron. This single
+ * fenced write leaves only two observable states, pending or done.
+ */
+export async function completePolicyDecisionJob(
+  deps: RepoDeps,
+  input: { id: number; claimToken: string },
+): Promise<boolean> {
+  const nowMs = deps.now().getTime();
+  const result = await deps.db
+    .prepare(
+      `UPDATE ${TABLE_NAMES.jobs}
+       SET state = 'done', updated_at = ?, completed_at = ?, last_error = NULL
+       WHERE id = ? AND kind = 'policy_decision' AND state = 'pending' AND claim_token = ?`,
+    )
+    .bind(nowMs, nowMs, input.id, input.claimToken)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
  * Parses a `jobs.resolved_context` blob (migrations/0006_jobs_resolved_context.sql)
  * into a {@link ResolvedJobContext}, or `null` if the column is NULL, the
  * JSON is malformed, or the parsed value is missing a string `slug`. A bad
