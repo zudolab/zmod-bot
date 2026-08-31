@@ -4,6 +4,7 @@ import type { Env } from "../env";
 import type { FetchLike } from "../types";
 import {
   StashApiError,
+  StashTransportError,
   createStashApi,
   type HistoryPage,
   type NormalizedStashErrorCode,
@@ -15,6 +16,7 @@ import {
   POLICY_HISTORY_MAX_ITEMS,
   POLICY_HISTORY_MAX_PAGES,
   POLICY_HISTORY_PAGE_SIZE,
+  POLICY_HISTORY_SCAN_DEADLINE_MS,
   runPolicyHistoryRollback,
 } from "./history-rollback";
 
@@ -24,8 +26,30 @@ const WRITE = `zhs_${"w".repeat(43)}`;
 const NOW = new Date("2026-08-31T00:00:00.000Z");
 
 function env(overrides: Partial<Env> = {}): Env {
+  const rollbackAttempts = new Map<number, {
+    job_id: number;
+    path: string;
+    target_version: number;
+    expected_version: number;
+    created_at: number;
+    updated_at: number;
+  }>();
   return {
-    DB: createMockD1(),
+    DB: createMockD1({
+      onQuery: ({ query, bindings }) => {
+        if (!query.includes("INSERT INTO policy_rollback_attempts")) return undefined;
+        const [jobId, path, targetVersion, expectedVersion, createdAt, updatedAt] = bindings as [number, string, number, number, number, number];
+        const existing = rollbackAttempts.get(jobId);
+        if (existing !== undefined && (existing.path !== path || existing.target_version !== targetVersion)) {
+          return { results: [] };
+        }
+        const row = existing === undefined
+          ? { job_id: jobId, path, target_version: targetVersion, expected_version: expectedVersion, created_at: createdAt, updated_at: updatedAt }
+          : { ...existing, updated_at: updatedAt };
+        rollbackAttempts.set(jobId, row);
+        return { results: [row], meta: { changes: 1 } };
+      },
+    }),
     AI: {} as Ai,
     SLACK_BOT_TOKEN: "xoxb-test",
     SLACK_SIGNING_SECRET: "secret",
@@ -126,6 +150,21 @@ describe("runPolicyHistoryRollback", () => {
     expect(textFromPayload(result)).toContain("完了できませんでした");
   });
 
+  it("rejects a never-resolving history request at the deadline for durable retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = runPolicyHistoryRollback(
+        { env: env(), fetch, now, stashApi: stash({ getHistory: () => new Promise(() => {}) }) },
+        { jobId: 7, command: { operation: "history" } },
+      );
+      const rejection = expect(pending).rejects.toThrow("stash operation deadline exceeded");
+      await vi.advanceTimersByTimeAsync(POLICY_HISTORY_SCAN_DEADLINE_MS);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("enforces page and aggregate item bounds", async () => {
     const oversizedPage = vi.fn().mockResolvedValue(
       page(Array.from({ length: POLICY_HISTORY_PAGE_SIZE + 1 }, (_, index) => version(index + 1)), null),
@@ -222,6 +261,10 @@ describe("runPolicyHistoryRollback", () => {
     [429, "rate-limited", "Stashの利用制限に達しました。"],
     [500, "internal", "Stashで処理できませんでした。"],
     [501, "unknown", "Stash側でこの操作は利用できません。"],
+    [500, "scope", "Stashへのアクセス権限を確認してください。"],
+    [403, "rate-limited", "Stashの利用制限に達しました。"],
+    [429, "internal", "Stashで処理できませんでした。"],
+    [418, "unknown", "Stash側でこの操作は利用できません。"],
   ] as Array<[number, NormalizedStashErrorCode, string]>)
     ("maps normalized stash error %s/%s without exposing upstream details", async (status, code, expected) => {
       const rollback = vi.fn<StashApi["rollback"]>(async () => {
@@ -247,7 +290,7 @@ describe("runPolicyHistoryRollback", () => {
       expect(textFromPayload(result)).not.toContain("Stash API request failed");
     });
 
-  it("converges from history after a lost response without posting a second rollback", async () => {
+  it("replays the durable first request after response loss and an intervening write", async () => {
     const remote = createFakeStash({ now, readToken: READ, writeToken: WRITE });
     let loseResponse = true;
     const transport = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -269,14 +312,22 @@ describe("runPolicyHistoryRollback", () => {
     const input = { jobId: 7, command: { operation: "rollback" as const, version: 1 } };
     const deps = { env: env(), fetch, now, stashApi, invalidatePolicyCache: invalidate };
 
-    await expect(runPolicyHistoryRollback(deps, input)).rejects.toMatchObject({ status: 0, code: "unknown" });
-    const replayed = await runPolicyHistoryRollback(deps, { ...input, attempts: 1 });
+    await expect(runPolicyHistoryRollback(deps, input)).rejects.toBeInstanceOf(StashTransportError);
+    await stashApi.rollback({ path: PATH, toVersion: 1, expectedVersion: 2, jobId: "intervening" });
+    const replayed = await runPolicyHistoryRollback(deps, input);
 
     expect(textFromPayload(replayed)).toContain("新しいバージョンは v2");
     expect(invalidate).toHaveBeenCalledOnce();
-    expect(remote.state.files.get(PATH)?.versions).toHaveLength(2);
-    expect(remote.state.events.filter((event) => event.type === "change")).toHaveLength(1);
-    expect(remote.calls.filter(({ url }) => url.includes("/rollback/policy/reply-guidance.md"))).toHaveLength(1);
+    expect(remote.state.files.get(PATH)?.versions).toHaveLength(3);
+    expect(remote.state.events.filter((event) => event.type === "change")).toHaveLength(2);
+    const jobPosts = remote.calls.filter(({ url, headers }) =>
+      url.includes("/rollback/policy/reply-guidance.md") && headers["idempotency-key"] === "policy-job-7"
+    );
+    expect(jobPosts).toHaveLength(2);
+    expect(jobPosts.map(({ body }) => body)).toEqual([
+      JSON.stringify({ toVersion: 1, expectedVersion: 1 }),
+      JSON.stringify({ toVersion: 1, expectedVersion: 1 }),
+    ]);
   });
 
   it("does not treat an existing matching rollback as recovered on the first attempt", async () => {
@@ -292,7 +343,7 @@ describe("runPolicyHistoryRollback", () => {
 
     const result = await runPolicyHistoryRollback(
       { env: env(), fetch, now, stashApi, invalidatePolicyCache: vi.fn() },
-      { jobId: 7, attempts: 0, command: { operation: "rollback", version: 1 } },
+      { jobId: 7, command: { operation: "rollback", version: 1 } },
     );
 
     expect(textFromPayload(result)).toContain("新しいバージョンは v3");

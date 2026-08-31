@@ -48,6 +48,14 @@ export class StashConfigurationError extends Error {
   }
 }
 
+/** Bounded transport failure. The caught exception/cause is never retained. */
+export class StashTransportError extends Error {
+  constructor() {
+    super("Stash API transport failed");
+    this.name = "StashTransportError";
+  }
+}
+
 /** Bounded remote failure. No upstream message, response, current head, or credential is retained. */
 export class StashApiError extends Error {
   readonly status: number;
@@ -328,7 +336,7 @@ async function request(
       headers: { Authorization: `Bearer ${token}`, ...init.headers },
     });
   } catch {
-    throw new StashApiError(0, "unknown");
+    throw new StashTransportError();
   }
   if (!response.ok && response.status !== 304) return remoteError(response);
   return response;

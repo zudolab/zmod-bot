@@ -30,6 +30,7 @@ describe("migrations/0001_init.sql", () => {
         "policy_proposal_leases",
         "policy_decision_fences",
         "policy_decisions",
+        "policy_rollback_attempts",
       ]),
     );
   });
@@ -47,7 +48,7 @@ describe("migrations/0001_init.sql", () => {
     );
   });
 
-  it("0004/0005/0006/0007/0008 apply cleanly: origin_job_id, jobs_thread_lookup, resolved_context, last-known-good, and coordination state all exist", async () => {
+  it("0004 through 0009 apply cleanly: thread, policy cache, coordination, and rollback attempt state all exist", async () => {
     env = await createTestEnv();
 
     const refDraftColumns = await env.db.prepare("PRAGMA table_info(ref_drafts)").all<{ name: string }>();
@@ -85,6 +86,16 @@ describe("migrations/0001_init.sql", () => {
       "remote_commit_id",
       "conflict_state",
       "slack_update_completed",
+      "created_at",
+      "updated_at",
+    ]);
+
+    const rollbackAttemptColumns = await env.db.prepare("PRAGMA table_info(policy_rollback_attempts)").all<{ name: string }>();
+    expect(rollbackAttemptColumns.results.map((row) => row.name)).toEqual([
+      "job_id",
+      "path",
+      "target_version",
+      "expected_version",
       "created_at",
       "updated_at",
     ]);

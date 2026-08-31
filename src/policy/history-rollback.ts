@@ -22,11 +22,13 @@ import {
   createStashApi,
   StashApiError,
   StashConfigurationError,
+  StashTransportError,
   type HistoryPage,
   type RollbackResult,
   type StashApi,
 } from "../stash/api";
 import { invalidateLivePolicyCache } from "../stash/policy-reader";
+import { adoptPolicyRollbackAttempt } from "../stash/rollback-attempt-store";
 import { POLICY_DOC_PATH } from "./contract";
 
 /** One history request is kept below the stash API's hard limit. */
@@ -70,8 +72,6 @@ export interface PolicyHistoryRollbackDeps {
 export interface PolicyHistoryRollbackInput {
   jobId: number;
   command: PolicyCommand;
-  /** Durable queue attempt number; zero is the first execution. */
-  attempts?: number;
 }
 
 type PolicyRollbackInput = Omit<PolicyHistoryRollbackInput, "command"> & {
@@ -286,16 +286,16 @@ function errorPayload(error: unknown, operation: PolicyCommand["operation"]): Sl
     if (error.code === "not-found" || error.code === "version-not-found" || error.code === "file-deleted" || error.code === "rollback-target-tombstone") {
       return refusalPayload(operation === "history" ? "ポリシー履歴が見つかりませんでした。" : "対象のポリシーまたはバージョンが見つかりませんでした。");
     }
-    if (error.code === "unauthorized" || error.code === "scope" || error.code === "token-expired" || error.status === 401 || error.status === 403) {
+    if (error.code === "unauthorized" || error.code === "scope" || error.code === "token-expired") {
       return refusalPayload("Stashへのアクセス権限を確認してください。");
     }
-    if (error.code === "rate-limited" || error.status === 429) {
+    if (error.code === "rate-limited") {
       return refusalPayload("Stashの利用制限に達しました。時間をおいて再試行してください。");
     }
-    if (error.code === "internal" || error.status === 500) {
+    if (error.code === "internal") {
       return refusalPayload("Stashで処理できませんでした。必要に応じて再試行してください。");
     }
-    if (error.status === 501) {
+    if (error.code === "unknown") {
       return refusalPayload("Stash側でこの操作は利用できません。");
     }
   }
@@ -328,28 +328,6 @@ async function runHistory(
   return historyPayload(await collectHistory(stash));
 }
 
-/**
- * A retry after a lost rollback response must not issue a second POST. The
- * stash write contract fences idempotency by expectedVersion, so a retry
- * whose GET observes the newly-created head cannot replay that POST. The
- * first bounded history record is the durable evidence needed to converge.
- */
-async function hasRecoveredRollback(
-  stash: StashApi,
-  currentVersion: number,
-  targetVersion: number,
-): Promise<boolean> {
-  const page = parseHistoryPage(await withDeadline(
-    POLICY_STASH_OPERATION_DEADLINE_MS,
-    (signal) => stash.getHistory({ path: POLICY_DOC_PATH, limit: 1, signal }),
-  ));
-  const head = page.versions[0];
-  return page.headVersion === currentVersion
-    && head?.version === currentVersion
-    && head.kind === "rollback"
-    && head.rollbackOf === targetVersion;
-}
-
 async function runRollback(
   stash: StashApi,
   deps: PolicyHistoryRollbackDeps,
@@ -368,21 +346,25 @@ async function runRollback(
     throw new PolicyHistoryValidationError();
   }
 
-  if ((input.attempts ?? 0) > 0 && await hasRecoveredRollback(stash, current.file.version, input.command.version)) {
-    (deps.invalidatePolicyCache ?? invalidateLivePolicyCache)();
-    return rollbackPayload(current.file.version, input.command.version);
-  }
+  const attempt = await adoptPolicyRollbackAttempt(
+    { db: deps.env.DB, now: deps.now },
+    {
+      jobId: input.jobId,
+      targetVersion: input.command.version,
+      expectedVersion: current.file.version,
+    },
+  );
 
   const result = await withDeadline(POLICY_STASH_OPERATION_DEADLINE_MS, (signal) =>
     stash.rollback({
       path: POLICY_DOC_PATH,
       toVersion: input.command.version,
-      expectedVersion: current.file.version,
+      expectedVersion: attempt.expected_version,
       jobId: String(input.jobId),
       signal,
     }),
   );
-  if (!isValidRollbackResult(result, current.file.version, input.command.version)) {
+  if (!isValidRollbackResult(result, attempt.expected_version, input.command.version)) {
     throw new PolicyHistoryValidationError();
   }
   (deps.invalidatePolicyCache ?? invalidateLivePolicyCache)();
@@ -397,10 +379,10 @@ export async function runPolicyHistoryRollback(
   try {
     const stash = buildStash(deps);
     if (input.command.operation === "history") return await runHistory(stash);
-    return await runRollback(stash, deps, { jobId: input.jobId, attempts: input.attempts, command: input.command });
+    return await runRollback(stash, deps, { jobId: input.jobId, command: input.command });
   } catch (error) {
     if (error instanceof PolicyStashOperationTimeoutError) throw error;
-    if (error instanceof StashApiError && error.status === 0 && error.code === "unknown") throw error;
+    if (error instanceof StashTransportError) throw error;
     if (error instanceof StashConfigurationError || error instanceof StashApiError || error instanceof PolicyHistoryValidationError) {
       return errorPayload(error, input.command.operation);
     }

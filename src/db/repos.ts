@@ -748,6 +748,28 @@ export async function completePolicyDecisionJob(
 }
 
 /**
+ * Completes an exact stash-backed policy history/rollback command without
+ * entering the generic unreclaimable composing/delivering states. The caller
+ * parses and identifies the exact command; this write fences its shared
+ * policy_update kind, pending state, and active claim.
+ */
+export async function completePolicyStashCommandJob(
+  deps: RepoDeps,
+  input: { id: number; claimToken: string },
+): Promise<boolean> {
+  const nowMs = deps.now().getTime();
+  const result = await deps.db
+    .prepare(
+      `UPDATE ${TABLE_NAMES.jobs}
+       SET state = 'done', updated_at = ?, completed_at = ?, last_error = NULL
+       WHERE id = ? AND kind = 'policy_update' AND state = 'pending' AND claim_token = ?`,
+    )
+    .bind(nowMs, nowMs, input.id, input.claimToken)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
  * Parses a `jobs.resolved_context` blob (migrations/0006_jobs_resolved_context.sql)
  * into a {@link ResolvedJobContext}, or `null` if the column is NULL, the
  * JSON is malformed, or the parsed value is missing a string `slug`. A bad

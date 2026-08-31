@@ -168,7 +168,7 @@ describe("createFakeStash", () => {
     expect(reused.status).toBe(422);
   });
 
-  it("fences rollback idempotency by the expected head version", async () => {
+  it("fences rollback idempotency by the full canonical request and replays equivalent defaults", async () => {
     const api = fake();
     const file = api.state.files.get(POLICY)!;
     file.versions.push({ ...file.versions[0]!, version: 2, body: "second", hash: "second" });
@@ -180,17 +180,25 @@ describe("createFakeStash", () => {
     });
     expect(first.status).toBe(201);
     const firstBody = await first.json();
-    const changedExpected = await request(api.fetch, `/v1/stashes/policy/rollback/${POLICY}`, {
-      method: "POST",
-      body: { toVersion: 1, expectedVersion: 3 },
-      headers,
-    });
-    expect(changedExpected.status).toBe(422);
-    expect((await changedExpected.json()) as Record<string, unknown>).toMatchObject({ error: { code: "idempotency-key-reused" } });
+    for (const body of [
+      { toVersion: 1, expectedVersion: 3 },
+      { toVersion: 2, expectedVersion: 2 },
+      { toVersion: 1, expectedVersion: 2, author: "different" },
+      { toVersion: 1, expectedVersion: 2, message: "different" },
+      { toVersion: 1, expectedVersion: 2, meta: { reason: "different" } },
+    ]) {
+      const changed = await request(api.fetch, `/v1/stashes/policy/rollback/${POLICY}`, {
+        method: "POST",
+        body,
+        headers,
+      });
+      expect(changed.status).toBe(422);
+      expect((await changed.json()) as Record<string, unknown>).toMatchObject({ error: { code: "idempotency-key-reused" } });
+    }
 
     const replay = await request(api.fetch, `/v1/stashes/policy/rollback/${POLICY}`, {
       method: "POST",
-      body: { toVersion: 1, expectedVersion: 2 },
+      body: { toVersion: 1, expectedVersion: 2, author: "", message: "", meta: {} },
       headers,
     });
     expect(replay.status).toBe(201);

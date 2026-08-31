@@ -140,21 +140,33 @@ describe("policy_update job orchestration", () => {
     expect(JSON.stringify(posts[0])).toContain("Stashの設定が不足");
   });
 
-  it("passes a retried policy job attempt to rollback recovery before posting", async () => {
+  it("routes rollback without the removed history-head recovery heuristic", async () => {
     const { fetch } = slackFetch();
     const now = () => new Date("2026-08-31T00:00:00.000Z");
     const readToken = `zhs_${"r".repeat(43)}`;
     const writeToken = `zhs_${"w".repeat(43)}`;
     const fake = createFakeStash({ now, readToken, writeToken });
     const stash = createStashApi({ baseUrl: "https://stash.example", stash: "policy", readToken, writeToken, fetch: fake.fetch });
+    const db = createMockD1({
+      onQuery: ({ query, bindings }) => query.includes("INSERT INTO policy_rollback_attempts")
+        ? { results: [{
+            job_id: bindings[0],
+            path: bindings[1],
+            target_version: bindings[2],
+            expected_version: bindings[3],
+            created_at: bindings[4],
+            updated_at: bindings[5],
+          }], meta: { changes: 1 } }
+        : undefined,
+    });
 
     await runJob(
-      env({ STASH_BASE_URL: "https://stash.example", STASH_NAME: "policy", STASH_READ_TOKEN: readToken, STASH_WRITE_TOKEN: writeToken }),
-      job({ raw_text: "<@U_BOT> policy rollback 1", attempts: 1 }),
+      env({ DB: db, STASH_BASE_URL: "https://stash.example", STASH_NAME: "policy", STASH_READ_TOKEN: readToken, STASH_WRITE_TOKEN: writeToken }),
+      job({ raw_text: "<@U_BOT> policy rollback 1" }),
       { fetch, now, stashApi: stash },
     );
 
-    expect(fake.calls.some(({ url }) => url.includes("/history/policy/reply-guidance.md"))).toBe(true);
+    expect(fake.calls.some(({ url }) => url.includes("/history/policy/reply-guidance.md"))).toBe(false);
     expect(fake.calls.filter(({ url }) => url.includes("/rollback/policy/reply-guidance.md"))).toHaveLength(1);
   });
 
