@@ -83,6 +83,13 @@ set is a refusal; it does not create another editor run or change set. The named
 30-second editor bound. Expired leases can be reclaimed, but a stale generation cannot continue to
 create a change set.
 
+Stash-backed policy jobs stay in the reclaimable `pending` state throughout remote and Slack I/O.
+If transport is lost after change-set creation, the retry re-lists the open set, fetches its exact
+diff, and reconstructs the review without another editor call or create. Once a durable decision
+epoch exists, later policy commands point back to the original review instead of advertising fresh
+buttons. A received stash HTTP error is surfaced once and completes that decision without automatic
+stash retry; only a true transport/deadline loss or unfinished Slack delivery enters queue backoff.
+
 The editor receives the authoritative stash document and its version. The existing policy validator
 still protects the immutable header, required headings, byte limit, URLs, customer data, and fixed
 reply clauses. A valid candidate creates exactly one `policy/reply-guidance.md` put entry with the
@@ -198,6 +205,12 @@ pending -> composing -> delivering -> done
 (`src/db/repos.ts` `claimJobs` claims `state IN ('pending', 'failed')`); what keeps it from being
 picked up immediately is `claim_expires_at`, pushed forward by the backoff below. There is no
 separate "retry" write.
+
+Durable stash proposal/history/rollback and policy-decision jobs deliberately bypass the generic
+`composing`/`delivering` states: they remain `pending` through external I/O and complete with one
+claim-fenced `pending -> done` write. That exception keeps a Worker crash reclaimable; a received
+stash response is still terminal as described above and is never retried merely because it was an
+HTTP error.
 
 Every reply/polish/ref request from Slack becomes one `jobs` row at intake, before the bot ever
 acks Slack — see the epic's "durable intent before the ack." The cron trigger

@@ -12,6 +12,7 @@ import { ACTION_IDS, encodeButtonValue } from "../slack/commands";
 import { updateMessage, type SlackApiDeps } from "../slack/api";
 import {
   createStashApi,
+  STASH_ERROR_CODES,
   StashApiError,
   StashTransportError,
   type NormalizedStashErrorCode,
@@ -27,6 +28,7 @@ import type { FetchLike, NowFn, SleepFn } from "../types";
 
 const DECISION_EVENT = /^policy-decision:(chs_\d{13}[0-9a-f]{8}):(\d+)$/;
 const MAX_STASH_CONFLICTS = 20;
+const KNOWN_STASH_CODES = new Set<string>([...STASH_ERROR_CODES, "unknown"]);
 
 export interface PolicyDecisionJobDeps {
   fetch: FetchLike;
@@ -67,7 +69,7 @@ export async function runPolicyDecisionJob(
       writeToken: env.STASH_WRITE_TOKEN,
       fetch: deps.fetch,
     });
-    decision = await resolveRemote(repoDeps, stash, decision, deps.invalidatePolicyCache ?? invalidateLivePolicyCache, slackDeps);
+    decision = await resolveRemote(repoDeps, stash, decision, deps.invalidatePolicyCache ?? invalidateLivePolicyCache);
   }
 
   await updateMessage(slackDeps, {
@@ -83,13 +85,12 @@ async function resolveRemote(
   stash: StashApi,
   decision: PolicyDecisionRow,
   invalidate: () => void,
-  slackDeps: SlackApiDeps,
 ): Promise<PolicyDecisionRow> {
   let status: "open" | "applied" | "rejected" | "expired";
   try {
     status = (await stash.getChangeSet({ id: decision.change_set_id })).status;
   } catch (error) {
-    return handleRemoteError(repoDeps, decision, error, slackDeps);
+    return handleRemoteError(repoDeps, decision, error);
   }
 
   if (status === "applied") return persistRemote(repoDeps, decision, "applied");
@@ -116,7 +117,7 @@ async function resolveRemote(
     await stash.rejectChangeSet({ id: decision.change_set_id });
     return persistRemote(repoDeps, decision, "rejected");
   } catch (error) {
-    return handleRemoteError(repoDeps, decision, error, slackDeps);
+    return handleRemoteError(repoDeps, decision, error);
   }
 }
 
@@ -124,7 +125,6 @@ async function handleRemoteError(
   repoDeps: RepoDeps,
   decision: PolicyDecisionRow,
   error: unknown,
-  slackDeps: SlackApiDeps,
 ): Promise<PolicyDecisionRow> {
   if (error instanceof StashTransportError) throw error;
   if (error instanceof StashApiError) {
@@ -137,16 +137,16 @@ async function handleRemoteError(
     if (error.code === "change-set-closed") {
       return persistRemote(repoDeps, decision, "closed", error.code);
     }
-    await updateMessage(slackDeps, {
-      channel: decision.channel_id,
-      ts: decision.review_message_ts,
-      payload: operationalPayload(decision.change_set_id, error.status, error.code),
-    });
     log("warn", "policy decision remote operation failed", {
       status: error.status,
       normalizedCode: error.code,
       count: 1,
     });
+    // A received stash response is terminal: malformed requests, auth,
+    // rate limits, and server failures must be surfaced once, never fed back
+    // into the durable queue. Persist before Slack so a crash cannot repeat
+    // the remote request; the convergent terminal update resumes separately.
+    return persistRemote(repoDeps, decision, "closed", error.code);
   }
   throw error;
 }
@@ -198,6 +198,9 @@ function terminalPayload(decision: PolicyDecisionRow): SlackMessagePayload {
     case "expired":
       return statusPayload("このポリシー変更案は期限切れです。", "ポリシー変更案は期限切れです");
     case "closed":
+      if (decision.remote_code !== null && decision.remote_code !== "change-set-closed") {
+        return operationalPayload(decision.remote_code);
+      }
       return statusPayload("このポリシー変更案はすでに終了しています。", "ポリシー変更案は終了しています");
     case "conflict":
       return conflictPayload(decision.change_set_id);
@@ -232,24 +235,12 @@ function conflictPayload(changeSetId: string): SlackMessagePayload {
   ], "ポリシー変更案が競合しました");
 }
 
-function operationalPayload(
-  changeSetId: string,
-  status: number,
-  code: NormalizedStashErrorCode,
-): SlackMessagePayload {
-  const value = encodeButtonValue({ v: 1, id: changeSetId });
-  return buildMessagePayload([
-    mrkdwnSection(
-      "policy_decision_operational",
-      `ポリシー変更の処理に失敗しました（status=${status}, code=${code}）。自動的に再試行します。`,
-    ),
-    {
-      type: "actions",
-      block_id: "policy_review_actions",
-      elements: [
-        actionButton(ACTION_IDS.policyApprove, "承認", value, "primary"),
-        actionButton(ACTION_IDS.policyReject, "却下", value, "danger"),
-      ],
-    },
-  ], "ポリシー変更の処理を再試行します");
+function operationalPayload(rawCode: string): SlackMessagePayload {
+  const code: NormalizedStashErrorCode = KNOWN_STASH_CODES.has(rawCode)
+    ? rawCode as NormalizedStashErrorCode
+    : "unknown";
+  return statusPayload(
+    `ポリシー変更の処理に失敗しました（code=${code}）。この操作は自動再試行されません。`,
+    "ポリシー変更の処理に失敗しました",
+  );
 }

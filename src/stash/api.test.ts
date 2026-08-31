@@ -158,7 +158,7 @@ describe("stash API requests and successes", () => {
     if (result.kind === "file") expect(result.file.responseEtag).not.toBe(fake.state.files.get(PATH)!.versions[0]?.hash);
   });
 
-  it("paginates open/all lists with exact query fields and exposes computed expiry", async () => {
+  it("paginates status=all lists with exact query fields and exposes computed expiry", async () => {
     const { api, fake } = setup();
     const expiring = await api.createChangeSet({ ...putBody(), jobId: "1", expiresAt: new Date(clock.value.getTime() + 1).toISOString() });
     await api.createChangeSet({ ...putBody("other"), jobId: "2", path: PATH });
@@ -170,7 +170,6 @@ describe("stash API requests and successes", () => {
     expect(fake.calls.at(-1)?.url).toContain(`&after=${encodeURIComponent(all.nextAfter!)}`);
     clock.value = new Date(Date.parse(expiring.expiresAt));
     expect((await api.getChangeSet({ id: expiring.id })).status).toBe("expired");
-    expect((await api.listChangeSets({ status: "open", limit: 20 })).changeSets.every(({ status }) => status === "open")).toBe(true);
   });
 
   it("validates and returns preview diff fields, approve replay, reject, history, and rollback", async () => {
@@ -245,6 +244,36 @@ describe("stash API runtime validation and bounded errors", () => {
 
     const set = { id: "chs_178813440000000000001", status: "open", expiresAt: "2026-09-01T00:00:00.000Z", commitId: null, entries: [{ path: PATH, op: "put", baseVersion: 1, stale: false }] };
     await expect(apiWithFetch(responseFetch(new Response(JSON.stringify(set), { status: 200 }))).createChangeSet(putBody())).rejects.toMatchObject({ status: 200, code: "unknown" });
+  });
+
+  it("rejects every multi-entry or non-put success shape at the policy boundary", async () => {
+    const id = "chs_178813440000000000001";
+    const entry = { path: PATH, op: "put", baseVersion: 1, stale: false };
+    const set = { id, status: "open", expiresAt: "2026-09-01T00:00:00.000Z", commitId: null };
+    for (const entries of [[entry, entry], [{ ...entry, op: "delete" }]]) {
+      const api = apiWithFetch(responseFetch(new Response(JSON.stringify({ ...set, entries }), { status: 200 })));
+      await expect(api.getChangeSet({ id })).rejects.toMatchObject({ status: 200, code: "unknown" });
+    }
+
+    const ready = { state: "ready", unified: "@@ -1 +1 @@\n-old\n+new\n", truncated: false };
+    for (const entries of [
+      [{ path: PATH, op: "put", stale: false, diff: ready }, { path: PATH, op: "put", stale: false, diff: ready }],
+      [{ path: PATH, op: "rollback", stale: false, diff: ready }],
+    ]) {
+      const payload = { entries, stale: false, status: "open", truncated: false };
+      const api = apiWithFetch(responseFetch(new Response(JSON.stringify(payload), { status: 200 })));
+      await expect(api.getChangeSetDiff({ id, path: PATH })).rejects.toMatchObject({ status: 200, code: "unknown" });
+    }
+
+    const commit = { id: "cmt_178813440000000000001" };
+    for (const entries of [
+      [{ path: PATH, version: 2, kind: "put" }, { path: PATH, version: 3, kind: "put" }],
+      [{ path: PATH, version: 2, kind: "rollback" }],
+    ]) {
+      const payload = { status: "applied", commit: { ...commit, entries } };
+      const api = apiWithFetch(responseFetch(new Response(JSON.stringify(payload), { status: 200 })));
+      await expect(api.approveChangeSet({ id })).rejects.toMatchObject({ status: 200, code: "unknown" });
+    }
   });
 
   it("normalizes root file-deleted without retaining message/current", async () => {

@@ -212,7 +212,7 @@ describe("policy decision delivery", () => {
       path: `policy/${index}.md`,
       expectedVersion: index + 1,
     }))],
-  ] as const)("keeps approval not-found %s operational and retryable", async (_shape, conflicts) => {
+  ] as const)("keeps approval not-found %s operational and terminal", async (_shape, conflicts) => {
     await setup();
     await intake("approve");
     const approve = vi.fn(async () => { throw new StashApiError(404, "not-found", conflicts); });
@@ -220,11 +220,21 @@ describe("policy decision delivery", () => {
     const slack = slackFetch();
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    expect(await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash })).toMatchObject({ failed: 1 });
+    expect(await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash })).toEqual({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+    });
     expect(approve).toHaveBeenCalledOnce();
-    expect((await decision()).remote_result).toBe("pending");
-    expect(await getPolicyDecisionFence(repo, CHANGE_SET_ID)).toMatchObject({ state: "open" });
-    expect(JSON.stringify(slack.calls[0]?.body.blocks)).toContain("status=404, code=not-found");
+    expect(await decision()).toMatchObject({ remote_result: "closed", remote_code: "not-found" });
+    expect(await getPolicyDecisionFence(repo, CHANGE_SET_ID)).toMatchObject({ state: "closed" });
+    expect(JSON.stringify(slack.calls[0]?.body.blocks)).toContain("code=not-found");
+    expect(await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash })).toEqual({
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+    });
+    expect(approve).toHaveBeenCalledOnce();
   });
 
   it("preserves expired-open reject asymmetry while approve expires without a mutation", async () => {
@@ -320,7 +330,7 @@ describe("policy decision delivery", () => {
     [429, "rate-limited"],
     [500, "internal"],
     [501, "unknown"],
-  ] as const)("bounds operational %i/%s, updates in place, and parks for retry", async (status, code) => {
+  ] as const)("bounds operational %i/%s, updates in place once, and completes without retry", async (status, code) => {
     await setup();
     await intake("approve");
     const stash = fakeStash({ getChangeSet: vi.fn(async () => { throw new StashApiError(status, code); }) });
@@ -328,12 +338,24 @@ describe("policy decision delivery", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const result = await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash });
-    expect(result).toMatchObject({ failed: 1 });
+    expect(result).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
     expect(slack.calls).toHaveLength(1);
     expect(slack.calls[0]?.url).toBe("https://slack.com/api/chat.update");
-    expect(JSON.stringify(slack.calls[0]?.body)).toContain(`status=${status}`);
+    expect(JSON.stringify(slack.calls[0]?.body)).toContain(`code=${code}`);
+    expect(JSON.stringify(slack.calls[0]?.body)).toContain("自動再試行されません");
+    expect(JSON.stringify(slack.calls[0]?.body)).not.toContain("status=");
     expect(JSON.stringify(warn.mock.calls)).not.toContain("policy/reply-guidance");
+    expect(JSON.stringify(warn.mock.calls)).toContain(`\\\"status\\\":${status}`);
     const row = await handle!.db.prepare("SELECT state, attempts FROM jobs WHERE kind = 'policy_decision'").first<{ state: string; attempts: number }>();
-    expect(row).toEqual({ state: "failed", attempts: 1 });
+    expect(row).toEqual({ state: "done", attempts: 0 });
+    expect(await decision()).toMatchObject({ remote_result: "closed", remote_code: code });
+    expect(await getPolicyDecisionFence(repo, CHANGE_SET_ID)).toMatchObject({ state: "closed" });
+    expect(await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash })).toEqual({
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+    });
+    expect(stash.getChangeSet).toHaveBeenCalledOnce();
+    expect(slack.calls).toHaveLength(1);
   });
 });

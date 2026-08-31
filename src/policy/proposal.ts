@@ -21,16 +21,19 @@ import { buildPolicyReviewPayload } from "../slack/commands";
 import type { FetchLike, NowFn } from "../types";
 import {
   createStashApi,
+  StashTransportError,
   type ChangeSet,
   type ChangeSetDiffResult,
   type StashApi,
 } from "../stash/api";
 import {
   acquirePolicyProposalLease,
+  getPolicyDecisionFence,
   POLICY_PROPOSAL_LEASE_MS,
   releasePolicyProposalLease,
   renewPolicyProposalLease,
 } from "../stash/coordination-store";
+import { isStructurallyValidPolicy } from "../stash/policy-reader";
 import type { RepoDeps } from "../db/repos";
 import {
   POLICY_APPROVAL_WINDOW_MS,
@@ -51,6 +54,13 @@ export const POLICY_CHANGE_SET_SCAN_DEADLINE_MS = 15_000;
 /** Bound for each authoritative read, create, or diff request. */
 export const POLICY_STASH_OPERATION_DEADLINE_MS = 5_000;
 
+export class PolicyProposalDeadlineError extends Error {
+  constructor() {
+    super("stash proposal operation deadline exceeded");
+    this.name = "PolicyProposalDeadlineError";
+  }
+}
+
 // Keep the route's named timing contract available from its orchestration
 // boundary as well as the lower-level lease/contract modules.
 export { POLICY_APPROVAL_WINDOW_MS, POLICY_PROPOSAL_LEASE_MS };
@@ -58,7 +68,7 @@ export { POLICY_APPROVAL_WINDOW_MS, POLICY_PROPOSAL_LEASE_MS };
 /** The stash list endpoint accepts at most 200 rows per page. */
 const POLICY_CHANGE_SET_PAGE_SIZE = 200;
 
-const EXISTING_POLICY_PR_TEXT = "既存のポリシーPRがオープン中です。";
+const EXISTING_POLICY_TEXT = "既存のポリシー変更案がオープン中です。元のレビューを確認してください。";
 const IN_PROGRESS_TEXT = "ポリシー変更案を作成中です。少し待ってから再試行してください。";
 const REFUSAL_TEXT = "ポリシー更新案を作成できませんでした。";
 
@@ -85,7 +95,7 @@ export interface StashPolicyProposalInput {
 
 export type StashPolicyProposalResult =
   | { kind: "in_progress"; payload: SlackMessagePayload }
-  | { kind: "existing"; payload: SlackMessagePayload; changeSet: ChangeSet }
+  | { kind: "existing"; payload: SlackMessagePayload; changeSet: ChangeSet; diff?: ChangeSetDiffResult }
   | { kind: "no_change"; payload: SlackMessagePayload }
   | { kind: "rejected"; payload: SlackMessagePayload; reason: string }
   | { kind: "refused"; payload: SlackMessagePayload }
@@ -99,10 +109,19 @@ function inProgressResult(): StashPolicyProposalResult {
   return { kind: "in_progress", payload: operationalPayload(IN_PROGRESS_TEXT) };
 }
 
-function existingResult(changeSet: ChangeSet): StashPolicyProposalResult {
+function existingResult(changeSet: ChangeSet, diff: ChangeSetDiffResult): StashPolicyProposalResult {
   return {
     kind: "existing",
-    payload: operationalPayload(EXISTING_POLICY_PR_TEXT, "既存のポリシーPRがあります"),
+    payload: buildPolicyReviewPayload({ changeSetId: changeSet.id, diff, existing: true }),
+    changeSet,
+    diff,
+  };
+}
+
+function existingDecisionResult(changeSet: ChangeSet): StashPolicyProposalResult {
+  return {
+    kind: "existing",
+    payload: operationalPayload(EXISTING_POLICY_TEXT, "既存のポリシー変更案があります"),
     changeSet,
   };
 }
@@ -144,13 +163,17 @@ async function withDeadline<T>(ms: number, work: (signal: AbortSignal) => Promis
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           controller.abort();
-          reject(new Error("stash operation deadline exceeded"));
+          reject(new PolicyProposalDeadlineError());
         }, ms);
       }),
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+function isRetryableProposalFailure(error: unknown): boolean {
+  return error instanceof StashTransportError || error instanceof PolicyProposalDeadlineError;
 }
 
 async function scanOpenChangeSets(
@@ -203,7 +226,8 @@ async function getAuthoritativePolicy(
     || result.file.path !== POLICY_DOC_PATH
     || !Number.isSafeInteger(result.file.version)
     || result.file.version <= 0
-    || typeof result.file.body !== "string"
+    || result.file.stashVersion !== result.file.version
+    || !isStructurallyValidPolicy(result.file.body)
   ) {
     throw new Error("stash policy head is not an inline file");
   }
@@ -241,9 +265,25 @@ async function createPolicyChangeSet(
 }
 
 async function fetchPolicyDiff(stash: StashApi, id: string): Promise<ChangeSetDiffResult> {
-  return withDeadline(POLICY_STASH_OPERATION_DEADLINE_MS, (signal) =>
+  const result = await withDeadline(POLICY_STASH_OPERATION_DEADLINE_MS, (signal) =>
     stash.getChangeSetDiff({ id, path: POLICY_DOC_PATH, signal }),
   );
+  const entry = result.entries[0];
+  if (
+    result.status !== "open"
+    || result.stale
+    || result.truncated
+    || result.entries.length !== 1
+    || entry?.path !== POLICY_DOC_PATH
+    || entry.op !== "put"
+    || entry.stale
+    || entry.diff.state !== "ready"
+    || entry.diff.truncated
+    || entry.diff.unified.length === 0
+  ) {
+    throw new Error("stash policy diff is not an exact reviewable text put");
+  }
+  return result;
 }
 
 /**
@@ -280,15 +320,31 @@ export async function runStashPolicyProposal(
     let open: ChangeSet[];
     try {
       open = await scanOpenChangeSets(stash);
-    } catch {
+    } catch (error) {
+      if (isRetryableProposalFailure(error)) throw error;
       return refusalResult();
     }
-    if (open.length > 0) return existingResult(open[0]!);
+    if (open.length > 0) {
+      const existing = open[0]!;
+      // Once a durable local decision exists, the original review message is
+      // the only actionable UI. Re-rendering fresh buttons could advertise an
+      // action that its closed/conflict epoch will correctly refuse.
+      if (await getPolicyDecisionFence(repoDeps, existing.id) !== null) {
+        return existingDecisionResult(existing);
+      }
+      try {
+        return existingResult(existing, await fetchPolicyDiff(stash, existing.id));
+      } catch (error) {
+        if (isRetryableProposalFailure(error)) throw error;
+        return refusalResult();
+      }
+    }
 
     let current: { document: string; version: number };
     try {
       current = await getAuthoritativePolicy(stash);
-    } catch {
+    } catch (error) {
+      if (isRetryableProposalFailure(error)) throw error;
       return refusalResult();
     }
 
@@ -349,14 +405,16 @@ export async function runStashPolicyProposal(
         baseVersion: current.version,
         now: deps.now,
       });
-    } catch {
+    } catch (error) {
+      if (isRetryableProposalFailure(error)) throw error;
       return refusalResult();
     }
 
     let diff: ChangeSetDiffResult;
     try {
       diff = await fetchPolicyDiff(stash, changeSet.id);
-    } catch {
+    } catch (error) {
+      if (isRetryableProposalFailure(error)) throw error;
       return refusalResult();
     }
     try {

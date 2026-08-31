@@ -621,9 +621,10 @@ function boundedPolicyDiffBlocks(text: string, maxBlocks: number): unknown[] {
 function policyDiffText(diff: ChangeSetDiffResult): string {
   const entry = diff.entries[0];
   if (entry?.diff.state === "ready") return entry.diff.unified;
-  // A text put produced by this route always has one ready entry. Keep a
-  // deterministic bounded fallback for a malformed/closed remote response.
-  return "差分を表示できませんでした。";
+  // Production validates the exact one-entry text-put shape before reaching
+  // this renderer. Refuse a malformed injected caller rather than pairing an
+  // approve button with a review that did not show the actual stash diff.
+  throw new Error("policy review requires a ready stash diff");
 }
 
 /**
@@ -634,8 +635,12 @@ function policyDiffText(diff: ChangeSetDiffResult): string {
 export function buildPolicyReviewPayload(input: {
   changeSetId: string;
   diff: ChangeSetDiffResult;
+  existing?: boolean;
 }): SlackMessagePayload {
   const value = encodeButtonValue({ v: 1, id: input.changeSetId });
+  const prompt = input.existing === true
+    ? "既存のポリシー変更案がオープン中です。以下の差分を確認してください。"
+    : "ポリシー変更案を確認してください。以下は現在の内容との差分です。";
   const chromeBlocks = 2; // prompt + approve/reject actions
   const diffBlocks = boundedPolicyDiffBlocks(
     policyDiffText(input.diff),
@@ -643,7 +648,7 @@ export function buildPolicyReviewPayload(input: {
   );
   return buildMessagePayload(
     [
-      mrkdwnSection("policy_review_prompt", "ポリシー変更案を確認してください。以下は現在の内容との差分です。"),
+      mrkdwnSection("policy_review_prompt", prompt),
       ...diffBlocks,
       ...buildConfirmCancelBlocks({
         blockId: "policy_review_actions",
@@ -654,7 +659,7 @@ export function buildPolicyReviewPayload(input: {
         cancelLabel: "却下",
       }),
     ],
-    "ポリシー変更案を確認してください。",
+    input.existing === true ? "既存のポリシー変更案を確認してください。" : "ポリシー変更案を確認してください。",
   );
 }
 

@@ -9,10 +9,7 @@ const COMMIT_ID_PATTERN = /^cmt_\d{13}[0-9a-f]{8}$/;
 const QUOTED_ETAG_PATTERN = /^"[^"\r\n]+"$/;
 const MAX_ERROR_BODY_CHARS = 65_536;
 const MAX_CONFLICTS = 20;
-const MAX_DIFF_BYTES = 1_048_576;
-const MAX_INLINE_BODY_BYTES = 5_000_000;
 const MAX_PAGE_ITEMS = 200;
-const MAX_CHANGE_SET_ENTRIES = 20;
 
 export const STASH_ERROR_CODES = [
   "validation", "invalid-path", "body-not-well-formed", "unauthorized", "scope", "not-found",
@@ -84,12 +81,12 @@ export type GetFileResult =
   | { kind: "not-modified"; responseEtag: string; stashVersion: number };
 
 export type ChangeSetStatus = "open" | "applied" | "rejected" | "expired";
-export type ChangeSetEntryOp = "put" | "copy" | "delete" | "rollback";
+export type ChangeSetEntryOp = "put";
 
 export interface ChangeSetEntry {
   path: typeof POLICY_DOC_PATH;
-  op: ChangeSetEntryOp;
-  baseVersion: number | null;
+  op: "put";
+  baseVersion: number;
   stale: boolean;
 }
 
@@ -124,7 +121,7 @@ export interface ApproveResult {
   status: "applied";
   commit: {
     id: string;
-    entries: Array<{ path: typeof POLICY_DOC_PATH; version: number; kind: "put" | "delete" | "rollback" }>;
+    entries: Array<{ path: typeof POLICY_DOC_PATH; version: number; kind: "put" }>;
   };
 }
 
@@ -168,7 +165,7 @@ export interface CreateChangeSetInput {
 export interface StashApi {
   getFile(input?: { path?: string; ifNoneMatch?: string; signal?: AbortSignal }): Promise<GetFileResult>;
   createChangeSet(input: CreateChangeSetInput): Promise<ChangeSet>;
-  listChangeSets(input: { status: "open" | "all"; path?: string; limit: number; after?: string; signal?: AbortSignal }): Promise<ChangeSetPage>;
+  listChangeSets(input: { status: "all"; path?: string; limit: number; after?: string; signal?: AbortSignal }): Promise<ChangeSetPage>;
   getChangeSet(input: { id: string; signal?: AbortSignal }): Promise<ChangeSet>;
   getChangeSetDiff(input: { id: string; path?: string; context?: number; signal?: AbortSignal }): Promise<ChangeSetDiffResult>;
   approveChangeSet(input: { id: string; author?: string; message?: string; signal?: AbortSignal }): Promise<ApproveResult>;
@@ -267,10 +264,6 @@ function isNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isNullablePositive(value: unknown): value is number | null {
-  return value === null || isPositive(value);
-}
-
 function isIso(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const time = Date.parse(value);
@@ -353,10 +346,10 @@ function responseHeaders(response: Response): { responseEtag: string; stashVersi
 }
 
 function parseEntry(value: unknown, status: number): ChangeSetEntry {
-  if (!isObject(value) || value.path !== POLICY_DOC_PATH || !["put", "copy", "delete", "rollback"].includes(String(value.op)) || !isNullablePositive(value.baseVersion) || typeof value.stale !== "boolean") {
+  if (!isObject(value) || value.path !== POLICY_DOC_PATH || value.op !== "put" || !isPositive(value.baseVersion) || typeof value.stale !== "boolean") {
     return invalidSuccess(status);
   }
-  return { path: value.path, op: value.op as ChangeSetEntryOp, baseVersion: value.baseVersion, stale: value.stale };
+  return { path: value.path, op: "put", baseVersion: value.baseVersion, stale: value.stale };
 }
 
 function parseChangeSet(value: unknown, status: number): ChangeSet {
@@ -369,7 +362,7 @@ function parseChangeSet(value: unknown, status: number): ChangeSet {
     !(changeSetStatus === "applied"
       ? isNonEmptyString(value.commitId) && COMMIT_ID_PATTERN.test(value.commitId)
       : value.commitId === null) ||
-    !Array.isArray(value.entries) || value.entries.length < 1 || value.entries.length > MAX_CHANGE_SET_ENTRIES
+    !Array.isArray(value.entries) || value.entries.length !== 1
   ) return invalidSuccess(status);
   return {
     id: value.id as string,
@@ -383,7 +376,7 @@ function parseChangeSet(value: unknown, status: number): ChangeSet {
 function parseDiff(value: unknown, status: number): ChangeSetDiff {
   if (!isObject(value) || typeof value.state !== "string") return invalidSuccess(status);
   if (value.state === "same" || value.state === "binary" || value.state === "oversized") return { state: value.state };
-  if (value.state !== "ready" || typeof value.unified !== "string" || utf8Bytes(value.unified) > MAX_DIFF_BYTES || typeof value.truncated !== "boolean") {
+  if (value.state !== "ready" || typeof value.unified !== "string" || typeof value.truncated !== "boolean") {
     return invalidSuccess(status);
   }
   return { state: "ready", unified: value.unified, truncated: value.truncated };
@@ -414,7 +407,7 @@ export function createStashApi(options: StashApiOptions): StashApi {
       const headers = responseHeaders(response);
       if (response.status === 304) return { kind: "not-modified", ...headers };
       const payload = await parseSuccess(response);
-      if (!isObject(payload) || payload.path !== path || !isPositive(payload.version) || payload.version !== headers.stashVersion || !(typeof payload.body === "string" || payload.body === null) || (typeof payload.body === "string" && utf8Bytes(payload.body) > MAX_INLINE_BODY_BYTES) || payload.deleted !== false) {
+      if (!isObject(payload) || payload.path !== path || !isPositive(payload.version) || payload.version !== headers.stashVersion || !(typeof payload.body === "string" || payload.body === null) || payload.deleted !== false) {
         return invalidSuccess(response.status);
       }
       return { kind: "file", file: { path, version: payload.version, body: payload.body, ...headers } };
@@ -484,14 +477,14 @@ export function createStashApi(options: StashApiOptions): StashApi {
       const response = await request(ctx, "read", `${stashRoot}/change-sets/${encodeURIComponent(input.id)}/diff${suffix}`, { signal: input.signal });
       if (response.status !== 200) return invalidSuccess(response.status);
       const payload = await parseSuccess(response);
-      if (!isObject(payload) || !Array.isArray(payload.entries) || payload.entries.length > MAX_CHANGE_SET_ENTRIES || typeof payload.stale !== "boolean" || !["open", "applied", "rejected", "expired"].includes(String(payload.status)) || typeof payload.truncated !== "boolean") {
+      if (!isObject(payload) || !Array.isArray(payload.entries) || payload.entries.length !== 1 || typeof payload.stale !== "boolean" || !["open", "applied", "rejected", "expired"].includes(String(payload.status)) || typeof payload.truncated !== "boolean") {
         return invalidSuccess(response.status);
       }
       const entries: ChangeSetDiffResult["entries"] = payload.entries.map((entry) => {
-        if (!isObject(entry) || entry.path !== POLICY_DOC_PATH || !["put", "copy", "delete", "rollback"].includes(String(entry.op)) || typeof entry.stale !== "boolean") {
+        if (!isObject(entry) || entry.path !== POLICY_DOC_PATH || entry.op !== "put" || typeof entry.stale !== "boolean") {
           return invalidSuccess(response.status);
         }
-        return { path: POLICY_DOC_PATH, op: entry.op as ChangeSetEntryOp, stale: entry.stale, diff: parseDiff(entry.diff, response.status) };
+        return { path: POLICY_DOC_PATH, op: "put" as const, stale: entry.stale, diff: parseDiff(entry.diff, response.status) };
       });
       return { entries, stale: payload.stale, status: payload.status as ChangeSetStatus, truncated: payload.truncated };
     },
@@ -504,12 +497,12 @@ export function createStashApi(options: StashApiOptions): StashApi {
       });
       if (response.status !== 200) return invalidSuccess(response.status);
       const payload = await parseSuccess(response);
-      if (!isObject(payload) || payload.status !== "applied" || !isObject(payload.commit) || !isNonEmptyString(payload.commit.id) || !COMMIT_ID_PATTERN.test(payload.commit.id) || !Array.isArray(payload.commit.entries) || payload.commit.entries.length < 1 || payload.commit.entries.length > MAX_CHANGE_SET_ENTRIES) {
+      if (!isObject(payload) || payload.status !== "applied" || !isObject(payload.commit) || !isNonEmptyString(payload.commit.id) || !COMMIT_ID_PATTERN.test(payload.commit.id) || !Array.isArray(payload.commit.entries) || payload.commit.entries.length !== 1) {
         return invalidSuccess(response.status);
       }
       const entries: ApproveResult["commit"]["entries"] = payload.commit.entries.map((entry) => {
-        if (!isObject(entry) || entry.path !== POLICY_DOC_PATH || !isPositive(entry.version) || !["put", "delete", "rollback"].includes(String(entry.kind))) return invalidSuccess(response.status);
-        return { path: POLICY_DOC_PATH, version: entry.version, kind: entry.kind as "put" | "delete" | "rollback" };
+        if (!isObject(entry) || entry.path !== POLICY_DOC_PATH || !isPositive(entry.version) || entry.kind !== "put") return invalidSuccess(response.status);
+        return { path: POLICY_DOC_PATH, version: entry.version, kind: "put" as const };
       });
       return { status: "applied", commit: { id: payload.commit.id, entries } };
     },

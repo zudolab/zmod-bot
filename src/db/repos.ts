@@ -748,12 +748,12 @@ export async function completePolicyDecisionJob(
 }
 
 /**
- * Completes an exact stash-backed policy history/rollback command without
+ * Completes a stash-backed policy proposal/history/rollback job without
  * entering the generic unreclaimable composing/delivering states. The caller
- * parses and identifies the exact command; this write fences its shared
- * policy_update kind, pending state, and active claim.
+ * identifies the stash route; this write fences its shared policy_update
+ * kind, pending state, and active claim.
  */
-export async function completePolicyStashCommandJob(
+export async function completePolicyStashJob(
   deps: RepoDeps,
   input: { id: number; claimToken: string },
 ): Promise<boolean> {

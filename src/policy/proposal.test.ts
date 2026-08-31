@@ -1,5 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobRow } from "../db/schema";
+import { recordIncomingEvent } from "../db/repos";
+import { recordPolicyDecision } from "../stash/coordination-store";
 import { createTestEnv, type TestEnvHandle } from "../../tests/helpers/test-env";
 import type { Env } from "../env";
 import type { FetchLike } from "../types";
@@ -9,8 +11,8 @@ import {
   type PolicyProposalUpdateFn,
   type StashPolicyProposalDeps,
 } from "./proposal";
-import { runJob } from "../jobs/worker";
-import type { ChangeSet, ChangeSetDiffResult, StashApi } from "../stash/api";
+import { runDeliveryPass, runJob } from "../jobs/worker";
+import { StashTransportError, type ChangeSet, type ChangeSetDiffResult, type StashApi } from "../stash/api";
 
 const CHANGE_SET_ID = "chs_0000000000001abcdef12";
 const CURRENT = [
@@ -223,7 +225,67 @@ describe("stash policy proposal orchestration", () => {
     expect(editorCalls).toBe(0);
     expect(fake.fileInputs).toHaveLength(0);
     expect(fake.createInputs).toHaveLength(0);
-    expect(JSON.stringify(result.payload)).toContain("既存のポリシーPRがオープン中です。");
+    expect(fake.diffInputs).toHaveLength(1);
+    expect(JSON.stringify(result.payload)).toContain("既存のポリシー変更案がオープン中です。");
+    expect(JSON.stringify(result.payload)).toContain("policy_approve");
+    expect(JSON.stringify(result.payload)).toContain("policy_reject");
+  });
+
+  it("points to the original review without advertising fresh buttons once a decision epoch exists", async () => {
+    const fake = fakeStash();
+    fake.openSets.push(changeSet());
+    await recordPolicyDecision(
+      { db: testEnv!.db, now: () => new Date(nowMs) },
+      {
+        changeSetId: CHANGE_SET_ID,
+        action: "approve",
+        actorUserId: "U_ADMIN",
+        channelId: "C_POLICY",
+        reviewMessageTs: "100.001",
+        receiptId: "existing-decision",
+      },
+    );
+
+    const result = await runStashPolicyProposal(deps(fake, async () => {
+      throw new Error("editor must not run");
+    }), { jobId: 45, request: "調整してください" });
+
+    expect(result.kind).toBe("existing");
+    expect(fake.diffInputs).toHaveLength(0);
+    expect(JSON.stringify(result.payload)).toContain("元のレビューを確認してください");
+    expect(JSON.stringify(result.payload)).not.toContain("policy_approve");
+    expect(JSON.stringify(result.payload)).not.toContain("policy_reject");
+  });
+
+  it.each([
+    ["empty", ""],
+    ["missing required structure", `${POLICY_HEADER}\nnot the required headings\n`],
+    ["over the policy byte limit", `${CURRENT}${"x".repeat(8_193)}`],
+  ])("refuses a %s authoritative head before the editor", async (_name, body) => {
+    const fake = fakeStash();
+    fake.api.getFile = async (input = {}) => {
+      fake.fileInputs.push(input);
+      return {
+        kind: "file",
+        file: {
+          path: "policy/reply-guidance.md",
+          version: 7,
+          body,
+          responseEtag: '"v7"',
+          stashVersion: 7,
+        },
+      };
+    };
+    let editorCalls = 0;
+
+    const result = await runStashPolicyProposal(deps(fake, async () => {
+      editorCalls++;
+      return { kind: "accepted", document: CANDIDATE, provider: "claude", model: "test" };
+    }), { jobId: 44, request: "調整してください" });
+
+    expect(result.kind).toBe("refused");
+    expect(editorCalls).toBe(0);
+    expect(fake.createInputs).toHaveLength(0);
   });
 
   it("single-flights simultaneous jobs before the editor", async () => {
@@ -293,7 +355,121 @@ describe("stash policy proposal orchestration", () => {
     expect(editorCalls).toBe(1);
     expect(fake.createInputs).toHaveLength(1);
     expect(fake.fileInputs).toHaveLength(1);
+    expect(fake.diffInputs).toHaveLength(2);
+    expect(JSON.stringify(second.payload)).toContain("policy_approve");
   });
+
+  it("keeps a stash proposal reclaimable and reconstructs review after a lost create response", async () => {
+    const fake = fakeStash();
+    let editorCalls = 0;
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    let createStarted!: () => void;
+    const createObserved = new Promise<void>((resolve) => { createStarted = resolve; });
+    fake.api.createChangeSet = async (input) => {
+      fake.createInputs.push(input);
+      fake.openSets.push(changeSet());
+      createStarted();
+      await createGate;
+      throw new StashTransportError();
+    };
+
+    const job = await recordIncomingEvent(
+      { db: testEnv!.db, now: () => new Date(nowMs) },
+      {
+        eventId: "policy-create-response-loss",
+        eventType: "app_mention",
+        kind: "policy_update",
+        channelId: "C_POLICY",
+        threadTs: "100.001",
+        actorUserId: "U_ADMIN",
+        rawText: "<@U_BOT> policy 調整してください",
+      },
+    );
+    if (job === null) throw new Error("test job was not created");
+    const posts: Record<string, unknown>[] = [];
+    const slackFetch = vi.fn<FetchLike>(async (_input, init) => {
+      posts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({ ok: true, channel: "C_POLICY", ts: "200.001" });
+    });
+    const updatePolicy: PolicyProposalUpdateFn = async () => {
+      editorCalls++;
+      return { kind: "accepted", document: CANDIDATE, provider: "claude", model: "test" };
+    };
+
+    const firstPass = runDeliveryPass({
+      env: env(testEnv!.db),
+      fetch: slackFetch,
+      now: () => new Date(nowMs),
+      stashApi: fake.api,
+      updatePolicy,
+    });
+    await createObserved;
+    const inFlight = await testEnv!.db.prepare("SELECT state FROM jobs WHERE id = ?").bind(job.id).first<{ state: string }>();
+    expect(inFlight?.state).toBe("pending");
+    releaseCreate();
+    await expect(firstPass).resolves.toEqual({ claimed: 1, succeeded: 0, failed: 1 });
+    expect(posts).toHaveLength(0);
+
+    nowMs += 31 * 60_000;
+    const secondPass = await runDeliveryPass({
+      env: env(testEnv!.db),
+      fetch: slackFetch,
+      now: () => new Date(nowMs),
+      stashApi: fake.api,
+      updatePolicy,
+    });
+
+    expect(secondPass).toEqual({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(editorCalls).toBe(1);
+    expect(fake.createInputs).toHaveLength(1);
+    expect(fake.diffInputs).toHaveLength(1);
+    expect(posts).toHaveLength(1);
+    expect(JSON.stringify(posts[0])).toContain("policy_approve");
+    expect((await testEnv!.db.prepare("SELECT state FROM jobs WHERE id = ?").bind(job.id).first<{ state: string }>())?.state).toBe("done");
+  });
+
+  it.each([
+    ["non-ready", {
+      ...diff(),
+      entries: [{
+        path: "policy/reply-guidance.md" as const,
+        op: "put" as const,
+        stale: false,
+        diff: { state: "same" as const },
+      }],
+    }],
+    ["stale", {
+      ...diff(),
+      stale: true,
+    }],
+    ["truncated", {
+      ...diff(),
+      entries: [{
+        path: "policy/reply-guidance.md" as const,
+        op: "put" as const,
+        stale: false,
+        diff: { state: "ready" as const, unified: "@@ -1 +1 @@\n-old\n+new\n", truncated: true },
+      }],
+    }],
+  ] satisfies Array<[string, ChangeSetDiffResult]>)
+    ("refuses a %s remote diff instead of offering a blind approval", async (_name, unsafeDiff) => {
+      const fake = fakeStash();
+      fake.api.getChangeSetDiff = async (input) => {
+        fake.diffInputs.push(input);
+        return unsafeDiff;
+      };
+
+      const result = await runStashPolicyProposal(
+        deps(fake, async () => ({ kind: "accepted", document: CANDIDATE, provider: "claude", model: "test" })),
+        { jobId: 72, request: "調整してください" },
+      );
+
+      expect(result.kind).toBe("refused");
+      expect(fake.createInputs).toHaveLength(1);
+      expect(JSON.stringify(result.payload)).not.toContain("policy_approve");
+      expect(JSON.stringify(result.payload)).not.toContain("policy_reject");
+    });
 
   it("selects the stash route in the worker only when both selectors are non-empty", async () => {
     const fake = fakeStash();

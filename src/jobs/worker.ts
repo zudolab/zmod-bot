@@ -48,7 +48,7 @@ import type { Env } from "../env";
 import {
   claimJobs,
   completePolicyDecisionJob,
-  completePolicyStashCommandJob,
+  completePolicyStashJob,
   getProductRefBySlug,
   recordResolvedContext,
   updateJobState,
@@ -485,6 +485,13 @@ async function buildPolishJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
   );
 }
 
+function hasStashWriteSelectors(env: Env): boolean {
+  return typeof env.STASH_BASE_URL === "string"
+    && env.STASH_BASE_URL.length > 0
+    && typeof env.STASH_WRITE_TOKEN === "string"
+    && env.STASH_WRITE_TOKEN.length > 0;
+}
+
 /** Runs the admin-only policy rewrite and maps every typed outcome to a Japanese operational reply. */
 async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): Promise<SlackMessagePayload> {
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
@@ -518,8 +525,7 @@ async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
   // present. Any incomplete stash configuration still takes the stash route
   // once both selectors are non-empty, where the proposal module refuses in
   // Japanese rather than silently falling back to GitHub.
-  if (typeof env.STASH_BASE_URL === "string" && env.STASH_BASE_URL.length > 0
-      && typeof env.STASH_WRITE_TOKEN === "string" && env.STASH_WRITE_TOKEN.length > 0) {
+  if (hasStashWriteSelectors(env)) {
     const proposal = await runStashPolicyProposal(
       {
         env,
@@ -706,10 +712,10 @@ async function deliverClaimedJob(
   const parsedPolicyCommand = job.kind === "policy_update"
     ? parseCommand(job.raw_text, env.SLACK_BOT_USER_ID)
     : undefined;
-  const isPolicyStashCommand = parsedPolicyCommand?.kind === "policy_update"
-    && parsedPolicyCommand.policyCommand !== undefined;
+  const isPolicyStashJob = parsedPolicyCommand?.kind === "policy_update"
+    && (parsedPolicyCommand.policyCommand !== undefined || hasStashWriteSelectors(env));
 
-  if (job.kind === "policy_decision" || isPolicyStashCommand) {
+  if (job.kind === "policy_decision" || isPolicyStashJob) {
     try {
       // Keep the job pending through every external/durable checkpoint.
       // Cron can reclaim pending after lease expiry; composing/delivering
@@ -721,7 +727,7 @@ async function deliverClaimedJob(
     }
     const completed = job.kind === "policy_decision"
       ? await completePolicyDecisionJob(repoDeps, { id: job.id, claimToken })
-      : await completePolicyStashCommandJob(repoDeps, { id: job.id, claimToken });
+      : await completePolicyStashJob(repoDeps, { id: job.id, claimToken });
     if (!completed) {
       log("warn", "jobs: durable policy completion fence rejected", { jobId: job.id });
     }
