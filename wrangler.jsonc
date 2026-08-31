@@ -11,6 +11,10 @@
   // rely on that.
   "workers_dev": true,
 
+  "observability": {
+    "enabled": true
+  },
+
   // ---------------------------------------------------------------------
   // Bindings
   // ---------------------------------------------------------------------
@@ -42,7 +46,14 @@
   // in CI with no `.dev.vars` present. Real values: `wrangler secret put
   // <NAME>`, never committed. See .dev.vars.example for local dev.
   "secrets": {
-    "required": ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"]
+    "required": [
+      "SLACK_BOT_TOKEN",
+      "SLACK_SIGNING_SECRET",
+      "ANTHROPIC_API_KEY",
+      "STASH_READ_TOKEN",
+      "STASH_WRITE_TOKEN",
+      "GITHUB_TOKEN"
+    ]
   },
 
   "vars": {
@@ -84,6 +95,11 @@
     "POLICY_MODEL": "",
 
     "SITE_API_BASE": "https://takazudomodular.com",
+
+    // Stash endpoint and name are operator-set; leave blank until the stash
+    // is provisioned. See docs/setup.md and docs/operations.md.
+    "STASH_BASE_URL": "",
+    "STASH_NAME": "",
 
     // Repository targeted by the policy PR loop, in owner/name form.
     "GITHUB_REPO": ""

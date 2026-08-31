@@ -1,7 +1,9 @@
 # Setup runbook
 
-First-time deployment of zmod-bot. **Follow the numbered order** — several steps fail, or fail
-silently, if done out of sequence. Where order matters, the step says why.
+First-time deployment procedure for zmod-bot. **Follow the numbered order** — several steps fail, or
+fail silently, if done out of sequence. Where order matters, the step says why. The integrated stash
+route is described alongside the retained GitHub fallback in `docs/operations.md`, but this runbook
+does not claim that either a stash or live policy behavior has been verified.
 
 You will need: a Cloudflare account with Workers AI and D1 available, and permission to create a
 Slack app in the target workspace.
@@ -78,10 +80,10 @@ curl -X POST https://slack.com/api/auth.test \
 
 The response's `user_id` field is the value for `SLACK_BOT_USER_ID`.
 
-## 5. Set the secrets
+## 5. Set the initial secrets
 
-Three secrets, deployed via `wrangler secret put` (never committed — `wrangler.jsonc`'s
-`secrets.required` lists only the *names*):
+Set the three secrets needed for the initial Slack/LLM deployment via `wrangler secret put` (never
+committed — `wrangler.jsonc`'s `secrets.required` lists only the *names*):
 
 ```bash
 npx wrangler secret put SLACK_BOT_TOKEN        # the xoxb- token from step 3
@@ -89,8 +91,10 @@ npx wrangler secret put SLACK_SIGNING_SECRET   # the signing secret from step 3
 npx wrangler secret put ANTHROPIC_API_KEY      # from console.anthropic.com
 ```
 
-For local dev, copy `.dev.vars.example` to `.dev.vars` (gitignored) and fill in the same three
-values there instead.
+The stash read/write tokens and the GitHub PAT are route-specific credentials; leave them unset until
+their respective later route step. For local dev, copy `.dev.vars.example` to `.dev.vars` (gitignored)
+and fill in these three values there. Keep the optional stash and GitHub entries empty unless that
+route has been deliberately configured.
 
 ## 6. Set the vars
 
@@ -105,17 +109,20 @@ Edit the `vars` block of `wrangler.jsonc`:
 The remaining provider/model vars (`COMPOSE_PROVIDER`, `AUTHOR_PROVIDER`, `POLISH_PROVIDER`,
 `CLAUDE_MODEL`, `POLICY_PROVIDER`, `POLICY_MODEL`, `SITE_API_BASE`) already ship with working
 defaults and don't need to change for a first deploy. `GITHUB_REPO` is deliberately blank until
-the policy PR loop's separate release gate below is complete; do not configure its token or enable
-the command before that gate.
+the GitHub fallback's separate release gate below is complete; do not configure its token or enable
+the GitHub fallback before that gate. `STASH_BASE_URL` and `STASH_NAME` stay blank until the final,
+owner-only stash provisioning step.
 Full meaning of every var: `docs/operations.md`.
 
 Commit the `vars` change — see `docs/operations.md` for which values are and aren't safe to commit.
 
-## Release gate — make the repository private before enabling policy edits
+## GitHub fallback release gate — make the repository private before enabling it
 
-The policy command sends the current policy document to the configured editor and creates a GitHub
-branch, commit, and pull request. The repository is public today, so this feature must remain
-disabled until the repository is private. Treat this as a release gate, not as a suggestion:
+The retained GitHub fallback sends the current policy document to the configured editor and creates a
+GitHub branch, commit, and pull request. The repository is public today, so this route must remain
+disabled until the repository is private. Treat this as a release gate, not as a suggestion. This
+gate does not apply to the stash route: a repository may remain public when policy content stays in
+the dedicated stash.
 
 - [ ] In GitHub, open **Settings → General → Danger Zone → Change repository visibility → Private**.
 - [ ] Confirm the repository is private in a fresh browser session or the repository header.
@@ -131,12 +138,13 @@ disabled until the repository is private. Treat this as a release gate, not as a
   npx wrangler secret put GITHUB_TOKEN
   ```
 
-- [ ] Set `GITHUB_REPO` to the exact `owner/name` repository value, deploy, and run the policy smoke
-      test in `docs/smoke-test.md` before telling operators that `@bot policy` is enabled.
+- [ ] Set `GITHUB_REPO` to the exact `owner/name` repository value, deploy, and have the owner run the
+      policy smoke test in `docs/smoke-test.md` before enabling the GitHub fallback. This checklist is
+      a gate, not evidence that a live policy request has already succeeded.
 
 Never commit the PAT or put it in `wrangler.jsonc`, `vars`, an issue, or a log. If the repository
-cannot be made private yet, leave `GITHUB_TOKEN` unset and do not enable or advertise the policy
-command. The runtime rejects a missing token before making any GitHub request.
+cannot be made private yet, leave `GITHUB_TOKEN` unset and do not enable or advertise the GitHub
+fallback. The runtime rejects a missing token before making any GitHub request.
 
 ## 7. Add GitHub Actions repo secrets
 
@@ -229,3 +237,31 @@ a real product next: `@zmod-bot zudo-rail`.
 
 If nothing happens, see `docs/operations.md` for how to inspect a stuck job, and
 `docs/smoke-test.md` for the checks that need a live deployment.
+
+## 13. Optional stash route — owner-only, last, and not yet verified
+
+`[DEFERRED — BLOCKED ON PROVISIONING]` The stash path is intentionally the final setup action. Do not
+provision it as part of the initial deployment or treat this checklist as evidence of real stash
+behavior. The owner must complete the stash service's own provisioning flow for one dedicated
+document, `policy/reply-guidance.md`, then record the exact stash name, base URL, and the Cloudflare
+account that hosts it in the private deployment record.
+
+Create only the two per-stash credentials:
+
+- `STASH_READ_TOKEN` for reads;
+- `STASH_WRITE_TOKEN` for proposals, decisions, and rollback.
+
+Both tokens must be minted without expiry fields: omit both `expiresAt` and `ttlSeconds`. Never use
+an admin token. After provisioning, set `STASH_BASE_URL` and `STASH_NAME` and add the two secrets:
+
+```bash
+npx wrangler secret put STASH_READ_TOKEN
+npx wrangler secret put STASH_WRITE_TOKEN
+```
+
+The stash route may be used while the GitHub repository remains public. It is selected for an ordinary
+`@bot policy <変更内容>` request only when both the base URL and write token are non-empty; history and
+rollback remain stash-only and refuse rather than falling back to GitHub. Approval is the live
+activation point and shows the actual inline Slack diff. See `docs/operations.md` for cache, deadline,
+last-known-good, version, conflict, and rate-limit contracts. Real provisioning, latency, and live
+policy behavior remain owner-only work under issue #60 and are not verified by this runbook.

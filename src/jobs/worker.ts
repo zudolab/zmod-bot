@@ -47,6 +47,8 @@
 import type { Env } from "../env";
 import {
   claimJobs,
+  completePolicyDecisionJob,
+  completePolicyStashJob,
   getProductRefBySlug,
   recordResolvedContext,
   updateJobState,
@@ -106,6 +108,10 @@ import {
   type PolicyUpdateInput,
   type PolicyUpdateResult,
 } from "../policy/update";
+import { runStashPolicyProposal } from "../policy/proposal";
+import { runPolicyHistoryRollback } from "../policy/history-rollback";
+import type { StashApi } from "../stash/api";
+import { runPolicyDecisionJob } from "../policy/decision";
 
 /** The shape of src/reply/compose.ts's composeReply — injected so tests can fake issue #13's (currently throwing) real implementation. See the module comment. */
 export type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
@@ -123,6 +129,8 @@ export interface RunDeliveryPassDeps {
   getPolicyFile?: GetPolicyFileFn;
   updatePolicy?: UpdatePolicyFn;
   ensurePolicyPr?: EnsurePolicyPrFn;
+  stashApi?: StashApi;
+  invalidatePolicyCache?: () => void;
 }
 
 export interface RunDeliveryPassResult {
@@ -151,6 +159,8 @@ export type RunJobDeps = {
   getPolicyFile?: GetPolicyFileFn;
   updatePolicy?: UpdatePolicyFn;
   ensurePolicyPr?: EnsurePolicyPrFn;
+  stashApi?: StashApi;
+  invalidatePolicyCache?: () => void;
 };
 
 const POLICY_TITLE_PREFIX = "[policy] ";
@@ -475,6 +485,13 @@ async function buildPolishJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
   );
 }
 
+function hasStashWriteSelectors(env: Env): boolean {
+  return typeof env.STASH_BASE_URL === "string"
+    && env.STASH_BASE_URL.length > 0
+    && typeof env.STASH_WRITE_TOKEN === "string"
+    && env.STASH_WRITE_TOKEN.length > 0;
+}
+
 /** Runs the admin-only policy rewrite and maps every typed outcome to a Japanese operational reply. */
 async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): Promise<SlackMessagePayload> {
   const parsed = parseCommand(job.raw_text, env.SLACK_BOT_USER_ID);
@@ -486,6 +503,40 @@ async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
   // but a manually inserted or legacy row must not gain GitHub access.
   if (!isAdminUser(env, job.actor_user_id)) {
     return buildTextMessagePayload("この操作には管理者権限が必要です。", "この操作には管理者権限が必要です。");
+  }
+
+  if (parsed.policyCommand !== undefined) {
+    // History and rollback are stash-only operations. Their own route checks
+    // the complete write configuration and returns a bounded Japanese refusal
+    // when it is absent; importantly, they never reach the GitHub fallback.
+    return runPolicyHistoryRollback(
+      {
+        env,
+        fetch: deps.fetch,
+        now: deps.now,
+        stashApi: deps.stashApi,
+        invalidatePolicyCache: deps.invalidatePolicyCache,
+      },
+      { jobId: job.id, command: parsed.policyCommand },
+    );
+  }
+
+  // Stash is an opt-in route: both the endpoint and write credential must be
+  // present. Any incomplete stash configuration still takes the stash route
+  // once both selectors are non-empty, where the proposal module refuses in
+  // Japanese rather than silently falling back to GitHub.
+  if (hasStashWriteSelectors(env)) {
+    const proposal = await runStashPolicyProposal(
+      {
+        env,
+        fetch: deps.fetch,
+        now: deps.now,
+        stashApi: deps.stashApi,
+        updatePolicy: deps.updatePolicy,
+      },
+      { jobId: job.id, request: parsed.request },
+    );
+    return proposal.payload;
   }
 
   const githubDeps: GithubApiDeps = { token: env.GITHUB_TOKEN, repo: env.GITHUB_REPO, fetch: deps.fetch };
@@ -548,6 +599,10 @@ async function composeAndPost(env: Env, job: JobRow, deps: RunJobDeps): Promise<
     case "policy_update": {
       payload = await buildPolicyJobPayload(env, job, deps);
       break;
+    }
+    case "policy_decision": {
+      await runPolicyDecisionJob(env, job, deps);
+      return;
     }
   }
 
@@ -654,6 +709,31 @@ async function deliverClaimedJob(
     if (!requeued) return false;
   }
 
+  const parsedPolicyCommand = job.kind === "policy_update"
+    ? parseCommand(job.raw_text, env.SLACK_BOT_USER_ID)
+    : undefined;
+  const isPolicyStashJob = parsedPolicyCommand?.kind === "policy_update"
+    && (parsedPolicyCommand.policyCommand !== undefined || hasStashWriteSelectors(env));
+
+  if (job.kind === "policy_decision" || isPolicyStashJob) {
+    try {
+      // Keep the job pending through every external/durable checkpoint.
+      // Cron can reclaim pending after lease expiry; composing/delivering
+      // are intentionally never used for these durable policy operations.
+      await runJob(env, job, deps);
+    } catch (error) {
+      await recordFailure(repoDeps, job, claimToken, error);
+      return false;
+    }
+    const completed = job.kind === "policy_decision"
+      ? await completePolicyDecisionJob(repoDeps, { id: job.id, claimToken })
+      : await completePolicyStashJob(repoDeps, { id: job.id, claimToken });
+    if (!completed) {
+      log("warn", "jobs: durable policy completion fence rejected", { jobId: job.id });
+    }
+    return true;
+  }
+
   const toComposing = await transition(repoDeps, job, claimToken, "composing");
   if (!toComposing) return false;
 
@@ -711,6 +791,8 @@ export async function runDeliveryPass(deps: RunDeliveryPassDeps): Promise<RunDel
       getPolicyFile: deps.getPolicyFile,
       updatePolicy: deps.updatePolicy,
       ensurePolicyPr: deps.ensurePolicyPr,
+      stashApi: deps.stashApi,
+      invalidatePolicyCache: deps.invalidatePolicyCache,
     });
     if (ok) succeeded++;
     else failed++;

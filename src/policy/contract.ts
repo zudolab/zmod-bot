@@ -37,3 +37,6 @@ export const POLICY_DAILY_CAP = 20;
 
 /** Wall-clock bound for the policy editor call. Policy edits run outside Slack's acknowledgement path. */
 export const POLICY_UPDATE_DEADLINE_MS = 30_000;
+
+/** How long a stash-backed policy proposal remains available for review. */
+export const POLICY_APPROVAL_WINDOW_MS = 72 * 60 * 60 * 1_000;

@@ -1,9 +1,14 @@
 # Smoke test
 
-Checks that need a **live, deployed Worker** with real credentials — nothing here can run against
-Miniflare or a fake `AI`/`fetch`. Run this once after every deploy that touches `src/llm/**`,
-`src/reply/**`, or `src/slack/verify.ts`/`src/slack/events.ts`, and always as part of first-time
-setup (`docs/setup.md` step 12 onward).
+This is an **owner-only live verification procedure**, not a record that a deployment or smoke test
+has happened. The checks need a live Worker with real credentials — nothing here can run against
+Miniflare or a fake `AI`/`fetch`. When a live deployment exists, use the applicable checks after every
+deploy that touches `src/llm/**`, `src/reply/**`, or `src/slack/verify.ts`/`src/slack/events.ts`, and
+as part of first-time setup (`docs/setup.md` step 12 onward).
+
+No stash has been provisioned, no real policy request has been run, and no stash latency or stability
+claim is made by this document. The stash checks below remain `[DEFERRED — BLOCKED ON PROVISIONING]`
+and owner-only (issue #60). Do not tick them or treat the integrated unit suite as live evidence.
 
 **Every guard test in this repo's unit suite uses a fake `AI` binding.** `pnpm test` proves the
 guard *logic* is correct against whatever a fake provider is told to return. It has never once
@@ -80,11 +85,12 @@ and check the target Slack channel for exactly one "使い方" reply, not two. T
 doing its job — the second POST's insert conflicts, returns `null`, and no second job is ever
 created.
 
-## 2. Policy command — admin refusal and a harmless dry run
+## 2. Policy routes — planned owner-only checks (not executed)
 
-Run this only after the private-repository release gate in `docs/setup.md` is complete and
-`GITHUB_TOKEN`/`GITHUB_REPO` are configured. The policy command has no `--dry-run` flag; this dry
-run means that it creates a review-only PR on a bot branch and you deliberately do **not** merge it.
+The two policy routes are checked side by side only after their respective prerequisites are complete.
+The procedures in this section are not evidence that either route has succeeded. The command has no
+`--dry-run` flag; the GitHub procedure below creates a review-only PR that you deliberately do **not**
+merge.
 
 ### Non-admin refusal
 
@@ -95,10 +101,11 @@ From a Slack user who is not in `SLACK_ADMIN_USER_IDS`, mention the bot in an al
 ```
 
 Expect a threaded reply saying `この操作には管理者権限が必要です。`. Confirm there is no new
-`policy_update` job and no GitHub branch, commit, or pull request. This refusal happens before the
-durable job write; a failed refusal post is logged and does not create remote state.
+`policy_update` job, no stash lease/change set, and no GitHub branch, commit, or pull request. This
+refusal happens before the durable job write; a failed refusal post is logged and does not create
+remote state.
 
-### Admin dry run
+### GitHub fallback admin dry run
 
 As an admin, make one small, reversible request:
 
@@ -113,10 +120,38 @@ posts `変更なしと判断しました。` and makes no GitHub write; retry wi
 you need to exercise PR creation. Use the review checklist in `docs/operations.md`, then close and
 delete this smoke-test branch/PR without merging it.
 
-## 3. A real provider call, end to end
+### Stash route — deferred until owner-only provisioning
 
-This is the check the guard suite exists to make necessary but cannot make sufficient by itself: **a
-real Llama completion, run through the exact same guards a fake completion is tested against.**
+`[DEFERRED — BLOCKED ON PROVISIONING]` No stash request has been run. Provision one dedicated stash
+document at `policy/reply-guidance.md`, record its exact name, base URL, and hosting Cloudflare
+account, and configure only per-stash `STASH_READ_TOKEN` and `STASH_WRITE_TOKEN` without expiry
+fields (`expiresAt`/`ttlSeconds` omitted). Never use an admin token. The repository may remain public
+for this route; its policy content does not go through GitHub.
+
+After that owner-only prerequisite, use an admin mention such as:
+
+```
+@zmod-bot policy 必要な場合のみ、簡潔な補足を加えます。
+```
+
+Expect the actual stash diff to appear inline in Slack with approve/reject buttons, and no GitHub
+branch, commit, or pull request. Approval is the live activation point. Verify that competing clicks
+are fenced so only the first decision applies, that a remote approval conflict is terminal with only
+one later reject available, and that other terminal outcomes stay closed. Then, using the stash-only
+commands, verify that `policy history` renders bounded safe version metadata and that
+`policy rollback <version>` reads the authoritative head, uses that head as `expectedVersion`, and
+creates a new version pointing to the selected old content without rewriting history.
+
+Also verify the documented safety bounds: a 30-second isolate cache, a 1,500 ms live read deadline,
+D1 last-known-good fallback followed by the compiled policy floor, and no policy health gating of
+`/health`. The shared non-admin stash limit is 60 writes per 60 seconds; policy proposals are capped
+at 20 per UTC day. None of these stash checks has been run yet.
+
+## 3. A real provider call, end to end (planned; not yet run)
+
+This is a planned check the guard suite makes necessary but cannot make sufficient by itself: **a real
+Llama completion, run through the exact same guards a fake completion is tested against.** It is not
+live evidence from this worktree.
 
 In the real workspace, `@bot <product>` for:
 
@@ -191,7 +226,7 @@ completion" rather than "cut short at ~50ms", the abort is not actually cancelli
 server-side — latency is still bounded by the deadline (the Worker stops waiting either way), but
 the call is still being billed. Worth knowing before it shows up on an invoice, not after.
 
-## 3. Byte-exactness — the one thing no unit test can prove
+## 4. Byte-exactness — the one thing no unit test can prove (planned; not yet run)
 
 **What the human copies out of Slack must equal what the generator produced.** The reply is pasted
 verbatim into Mercari Shops — any drift here (a Slack markdown escape, a Block Kit rendering quirk,

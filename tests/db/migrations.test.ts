@@ -26,6 +26,11 @@ describe("migrations/0001_init.sql", () => {
         "slack_event_receipts",
         "jobs",
         "usage_log",
+        "policy_last_known_good",
+        "policy_proposal_leases",
+        "policy_decision_fences",
+        "policy_decisions",
+        "policy_rollback_attempts",
       ]),
     );
   });
@@ -43,7 +48,7 @@ describe("migrations/0001_init.sql", () => {
     );
   });
 
-  it("0004/0005/0006 apply cleanly: origin_job_id, jobs_thread_lookup, and resolved_context all exist", async () => {
+  it("0004 through 0009 apply cleanly: thread, policy cache, coordination, and rollback attempt state all exist", async () => {
     env = await createTestEnv();
 
     const refDraftColumns = await env.db.prepare("PRAGMA table_info(ref_drafts)").all<{ name: string }>();
@@ -51,6 +56,49 @@ describe("migrations/0001_init.sql", () => {
 
     const jobColumns = await env.db.prepare("PRAGMA table_info(jobs)").all<{ name: string }>();
     expect(jobColumns.results.map((row) => row.name)).toEqual(expect.arrayContaining(["resolved_context"]));
+
+    const policyColumns = await env.db.prepare("PRAGMA table_info(policy_last_known_good)").all<{ name: string }>();
+    expect(policyColumns.results.map((row) => row.name)).toEqual([
+      "path",
+      "document",
+      "version",
+      "etag",
+      "confirmed_at",
+    ]);
+
+    const leaseColumns = await env.db.prepare("PRAGMA table_info(policy_proposal_leases)").all<{ name: string }>();
+    expect(leaseColumns.results.map((row) => row.name)).toEqual(["path", "owner_job_id", "generation", "expires_at"]);
+
+    const fenceColumns = await env.db.prepare("PRAGMA table_info(policy_decision_fences)").all<{ name: string }>();
+    expect(fenceColumns.results.map((row) => row.name)).toEqual(["change_set_id", "active_epoch", "state", "updated_at"]);
+
+    const decisionColumns = await env.db.prepare("PRAGMA table_info(policy_decisions)").all<{ name: string }>();
+    expect(decisionColumns.results.map((row) => row.name)).toEqual([
+      "change_set_id",
+      "decision_epoch",
+      "action",
+      "actor_user_id",
+      "channel_id",
+      "review_message_ts",
+      "remote_result",
+      "remote_code",
+      "remote_version",
+      "remote_commit_id",
+      "conflict_state",
+      "slack_update_completed",
+      "created_at",
+      "updated_at",
+    ]);
+
+    const rollbackAttemptColumns = await env.db.prepare("PRAGMA table_info(policy_rollback_attempts)").all<{ name: string }>();
+    expect(rollbackAttemptColumns.results.map((row) => row.name)).toEqual([
+      "job_id",
+      "path",
+      "target_version",
+      "expected_version",
+      "created_at",
+      "updated_at",
+    ]);
   });
 
   it("is additive-only: applying it a second time does not throw away data, it fails loudly on the duplicate CREATE TABLE", async () => {

@@ -15,7 +15,12 @@ describe("checkHealth", () => {
     // createMockD1 evaluates no SQL at all (see src/db/test-support.ts) —
     // every query answers with its empty default, so both the count and
     // the migrations scan come back empty rather than throwing.
-    expect(report).toEqual({ ok: true, migrations: [], refCount: 0 });
+    expect(report).toEqual({
+      ok: true,
+      migrations: [],
+      refCount: 0,
+      policySource: { source: "compiled", ageMs: 0, configured: false },
+    });
   });
 
   it("reports ok: false with a null refCount when the D1 round-trip itself throws", async () => {
@@ -29,6 +34,7 @@ describe("checkHealth", () => {
     expect(report.ok).toBe(false);
     expect(report.refCount).toBeNull();
     expect(report.migrations).toEqual([]);
+    expect(report.policySource).toEqual({ source: "compiled", ageMs: 0, configured: false });
     expect(report.error).toContain("simulated D1 outage");
   });
 
@@ -84,7 +90,39 @@ describe("handleHealth", () => {
     const response = await handleHealth(context);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, migrations: [], refCount: 0 });
+    expect(await response.json()).toEqual({
+      ok: true,
+      migrations: [],
+      refCount: 0,
+      policySource: { source: "compiled", ageMs: 0, configured: false },
+    });
+  });
+
+  it("keeps healthy D1 at 200 when configured stash is unreachable", async () => {
+    const context: RouteContext = {
+      request: new Request("https://example.com/health"),
+      env: {
+        DB: createMockD1(),
+        STASH_BASE_URL: "https://stash.example.test",
+        STASH_NAME: "policy-live",
+        STASH_READ_TOKEN: `zhs_${"r".repeat(43)}`,
+      } as unknown as Env,
+      ctx: { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext,
+      params: {},
+    };
+
+    const response = await handleHealth(context, {
+      fetch: async () => { throw new Error("configured stash unreachable"); },
+      now: () => new Date(10_000),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      migrations: [],
+      refCount: 0,
+      policySource: { source: "compiled", ageMs: 0, configured: true },
+    });
   });
 
   it("responds 500 when the D1 round-trip fails", async () => {

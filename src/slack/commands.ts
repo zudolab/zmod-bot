@@ -17,11 +17,16 @@ import type { Env } from "../env";
 import { parseCommaSeparated } from "../env";
 import {
   buildArrivalDateBlocks,
+  buildConfirmCancelBlocks,
   buildMessagePayload,
   buildMissingRefBlocks,
   escapeMrkdwn,
+  MAX_BLOCKS_PER_MESSAGE,
+  MAX_CHARS_PER_PREFORMATTED_BLOCK,
+  mrkdwnSection,
   type SlackMessagePayload,
 } from "./blocks";
+import type { ChangeSetDiffResult } from "../stash/api";
 
 /* -------------------------------------------------------------------------
  * Command grammar.
@@ -41,6 +46,11 @@ export interface ReplyModifiers {
   direct: boolean;
   arrival: ArrivalPresetKey | null;
 }
+
+/** The two stash-only administrative operations carried by a policy job. */
+export type PolicyCommand =
+  | { operation: "history" }
+  | { operation: "rollback"; version: number };
 
 export type ParsedCommand =
   | ({ kind: "reply"; query: string } & ReplyModifiers)
@@ -66,7 +76,12 @@ export type ParsedCommand =
   | { kind: "ref_refresh"; slug: string }
   | { kind: "ref_restore"; slug: string; version: number }
   | { kind: "polish"; text: string }
-  | { kind: "policy_update"; request: string }
+  /**
+   * Policy history/rollback deliberately retain the durable `policy_update`
+   * job kind. `policyCommand` is an in-memory parser detail so the jobs table
+   * and every unrelated dispatcher keep their existing shape.
+   */
+  | { kind: "policy_update"; request: string; policyCommand?: PolicyCommand }
   | { kind: "help" }
   /** Unparseable input or an unknown flag — `reason` is a ready-to-post Japanese explanation, never a stack trace (issue #14: "never a silent no-op and never a stack trace"). */
   | { kind: "unknown"; raw: string; reason: string };
@@ -80,6 +95,8 @@ export const USAGE_TEXT = [
   "`@bot --discord` / `@bot 明日` — 同じスレッド内なら、直前に返信した製品のまま指定だけを付け直します（フラグは毎回指定し直しです）",
   "`@bot polish` の次の行に整えたい文章を貼り付けます",
   "`@bot policy <変更内容>` — 返信ポリシーの更新PRを作成します（管理者のみ）",
+  "`@bot policy history` — 返信ポリシーの履歴を表示します（管理者のみ）",
+  "`@bot policy rollback <バージョン番号>` — 指定したポリシーのバージョンへ戻します（管理者のみ）",
   "`@bot ref show|history|restore|new|refresh <slugまたは製品名> [引数]` — 製品リファレンスの管理コマンド",
   "`@bot help` — この使い方を表示します",
 ].join("\n");
@@ -143,6 +160,31 @@ export function parseCommand(rawText: string, botUserId: string): ParsedCommand 
   const head = headTokens[0]?.toLowerCase() ?? "";
 
   if (head === "help") return { kind: "help" };
+
+  // These are intentionally recognized before the prose-shaped policy
+  // update grammar. They keep the durable job kind as `policy_update` while
+  // preventing a mistyped rollback from becoming a GitHub edit request.
+  if (/^policy[ \t]+history(?:[ \t\r\n]|$)/i.test(body)) {
+    if (/^policy history$/i.test(body)) {
+      return { kind: "policy_update", request: "history", policyCommand: { operation: "history" } };
+    }
+    return unknownCommand(rawText, "policy history は引数なしで指定してください。");
+  }
+  if (/^policy[ \t]+rollback(?:[ \t\r\n]|$)/i.test(body)) {
+    const match = /^policy rollback ([0-9]+)$/i.exec(body);
+    if (match === null) {
+      return unknownCommand(rawText, "policy rollback <バージョン番号> の形式で指定してください。");
+    }
+    const versionToken = match[1]!;
+    if (!/^[1-9]\d*$/.test(versionToken)) {
+      return unknownCommand(rawText, "policy rollback のバージョン番号は正の整数で指定してください。");
+    }
+    const version = Number(versionToken);
+    if (!Number.isSafeInteger(version) || version < 1) {
+      return unknownCommand(rawText, "policy rollback のバージョン番号が大きすぎます。");
+    }
+    return { kind: "policy_update", request: `rollback ${version}`, policyCommand: { operation: "rollback", version } };
+  }
 
   // Unlike the tokenized reply/ref grammars, a policy request is prose:
   // preserve every byte after the required command separator so the
@@ -446,6 +488,8 @@ export const ACTION_IDS = {
   refReject: "ref_reject",
   variantPick: "variant_pick",
   candidatePick: "candidate_pick",
+  policyApprove: "policy_approve",
+  policyReject: "policy_reject",
 } as const;
 
 /**
@@ -529,6 +573,94 @@ export function buildCandidatePickerPayload(jobId: number, candidateSlugs: reado
     })),
   });
   return buildMessagePayload([promptBlock, ...pickerBlocks], "複数の製品候補があります。該当するものを選択してください。");
+}
+
+/** One literal diff block. Unlike an mrkdwn section, this preserves every
+ * character that an operator may copy from the review. */
+function policyDiffBlock(content: string): unknown {
+  return {
+    type: "rich_text",
+    elements: [
+      {
+        type: "rich_text_preformatted",
+        elements: [{ type: "text", text: content }],
+      },
+    ],
+  };
+}
+
+/** Splits at code-point boundaries so an oversized stash diff cannot make
+ * the whole Slack message invalid. The marker is the only intentional loss
+ * and is added only when the bounded review surface is exhausted. */
+function boundedPolicyDiffBlocks(text: string, maxBlocks: number): unknown[] {
+  const capacity = maxBlocks * MAX_CHARS_PER_PREFORMATTED_BLOCK;
+  let bounded = text;
+  if (bounded.length > capacity) {
+    const budget = capacity - 1;
+    let kept = "";
+    for (const character of bounded) {
+      if (kept.length + character.length > budget) break;
+      kept += character;
+    }
+    bounded = `${kept}…`;
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  for (const character of bounded) {
+    if (current.length + character.length > MAX_CHARS_PER_PREFORMATTED_BLOCK) {
+      chunks.push(current);
+      current = "";
+    }
+    current += character;
+  }
+  if (current !== "" || chunks.length === 0) chunks.push(current);
+  return chunks.map(policyDiffBlock);
+}
+
+function policyDiffText(diff: ChangeSetDiffResult): string {
+  const entry = diff.entries[0];
+  if (entry?.diff.state === "ready") return entry.diff.unified;
+  // Production validates the exact one-entry text-put shape before reaching
+  // this renderer. Refuse a malformed injected caller rather than pairing an
+  // approve button with a review that did not show the actual stash diff.
+  throw new Error("policy review requires a ready stash diff");
+}
+
+/**
+ * Renders a stash change-set's candidate-vs-head diff as an inline review.
+ * The button value is deliberately just the change-set id envelope; all
+ * other decision context is recovered by the later interaction route.
+ */
+export function buildPolicyReviewPayload(input: {
+  changeSetId: string;
+  diff: ChangeSetDiffResult;
+  existing?: boolean;
+}): SlackMessagePayload {
+  const value = encodeButtonValue({ v: 1, id: input.changeSetId });
+  const prompt = input.existing === true
+    ? "既存のポリシー変更案がオープン中です。以下の差分を確認してください。"
+    : "ポリシー変更案を確認してください。以下は現在の内容との差分です。";
+  const chromeBlocks = 2; // prompt + approve/reject actions
+  const diffBlocks = boundedPolicyDiffBlocks(
+    policyDiffText(input.diff),
+    MAX_BLOCKS_PER_MESSAGE - chromeBlocks,
+  );
+  return buildMessagePayload(
+    [
+      mrkdwnSection("policy_review_prompt", prompt),
+      ...diffBlocks,
+      ...buildConfirmCancelBlocks({
+        blockId: "policy_review_actions",
+        confirmActionId: ACTION_IDS.policyApprove,
+        cancelActionId: ACTION_IDS.policyReject,
+        value,
+        confirmLabel: "承認",
+        cancelLabel: "却下",
+      }),
+    ],
+    input.existing === true ? "既存のポリシー変更案を確認してください。" : "ポリシー変更案を確認してください。",
+  );
 }
 
 export interface MissingRefPayloadInput {

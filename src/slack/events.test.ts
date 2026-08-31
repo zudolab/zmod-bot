@@ -349,6 +349,29 @@ describe("handleSlackEventsWithDeps", () => {
       expect(JSON.stringify(slackBodies[0])).toContain("管理者権限");
     });
 
+    it.each(["policy history", "policy rollback 2"])("applies the admin gate to stash-only %s", async (command) => {
+      const payload = appMentionEventCallback({ text: `<@U_BOT> ${command}`, user: "U_NOT_ADMIN" });
+      const request = await makeSignedRequest(JSON.stringify(payload));
+      const mockDb = createMockD1();
+      const { waitUntil, scheduled } = makeWaitUntil();
+      const slackBodies: Record<string, unknown>[] = [];
+      const fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        slackBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({ ok: true, channel: ALLOWED_CHANNEL, ts: "1760000000.1" });
+      }) as FetchLike;
+
+      const response = await handleSlackEventsWithDeps(
+        request,
+        baseEnv({ SLACK_ADMIN_USER_IDS: "U_ADMIN", SLACK_BOT_TOKEN: "xoxb-test" }),
+        makeDeps({ db: mockDb, waitUntil, fetch }),
+      );
+      await Promise.all(scheduled);
+
+      expect(response.status).toBe(200);
+      expect(mockDb.calls).toHaveLength(0);
+      expect(JSON.stringify(slackBodies[0])).toContain("管理者権限");
+    });
+
     it("defaults thread_ts to event.ts when thread_ts is absent", async () => {
       const payload = appMentionEventCallback();
       const body = JSON.stringify(payload);
@@ -462,6 +485,8 @@ describe("classifyJobKind", () => {
 
   it("classifies 'policy' as policy_update", () => {
     expect(classifyJobKind("<@U_BOT> policy 語調を変更")).toBe("policy_update");
+    expect(classifyJobKind("<@U_BOT> policy history")).toBe("policy_update");
+    expect(classifyJobKind("<@U_BOT> policy rollback 12")).toBe("policy_update");
     expect(classifyJobKind("<@U_BOT> policy\t語調を変更")).toBe("reply");
   });
 

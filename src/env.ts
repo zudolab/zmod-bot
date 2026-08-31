@@ -19,6 +19,10 @@ export interface Env {
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   ANTHROPIC_API_KEY: string;
+  /** Present after the per-stash credentials are provisioned. */
+  STASH_READ_TOKEN?: string;
+  /** Present after the per-stash credentials are provisioned. */
+  STASH_WRITE_TOKEN?: string;
   /** Validated at the GitHub client boundary; absent until the policy PR loop is configured. */
   GITHUB_TOKEN?: string;
 
@@ -51,6 +55,10 @@ export interface Env {
    */
   POLICY_MODEL?: string;
   SITE_API_BASE: string;
+  /** Present after the stash endpoint is provisioned. */
+  STASH_BASE_URL?: string;
+  /** Present after the stash endpoint is provisioned. */
+  STASH_NAME?: string;
   /** Repository targeted by policy PRs, in owner/name form. */
   GITHUB_REPO?: string;
 }

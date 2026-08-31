@@ -297,11 +297,17 @@ describe("every guard trip falls back to the deterministic render", () => {
   it("budget: trips at the daily cap without calling the provider", async () => {
     const db = createMockD1({ onQuery: () => ({ results: [{ calls: 300 }] }) });
     const { ai, calls } = createFakeAi({ text: faithfulSection(SMALL_SLUG) });
-    const deps: ComposeReplyDeps = { env: createEnv({ DB: db, AI: ai }), fetch: createFakeFetch().fetch };
+    const readPolicy = vi.fn(async () => ({ document: "must stay unread", source: "compiled" as const, ageMs: 0 }));
+    const deps: ComposeReplyDeps = {
+      env: createEnv({ DB: db, AI: ai }),
+      fetch: createFakeFetch().fetch,
+      readPolicy,
+    };
 
     const result = await composeReply(deps, baseInput(SMALL_SLUG));
 
     expect(calls).toHaveLength(0);
+    expect(readPolicy).not.toHaveBeenCalled();
     expect(result.usedFallback).toBe(true);
     expect(result.text).toBe(deterministic(SMALL_SLUG));
     expect(result.fallback).toMatchObject({ guard: "budget", reason: "budget_exceeded" });
@@ -471,6 +477,23 @@ describe("every guard trip falls back to the deterministic render", () => {
     await expect(composeReply(deps, baseInput(SMALL_SLUG))).resolves.toMatchObject({ usedFallback: true });
   });
 
+  it("fails open around a rejecting policy seam without classifying it as a provider failure", async () => {
+    const { ai, calls } = createFakeAi({ text: faithfulSection(SMALL_SLUG) });
+    const deps: ComposeReplyDeps = {
+      env: createEnv({ AI: ai }),
+      fetch: createFakeFetch().fetch,
+      readPolicy: async () => { throw new Error("stash outage with private content"); },
+    };
+
+    const result = await composeReply(deps, baseInput(SMALL_SLUG));
+
+    expect(result.usedFallback).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(logged.join("\n")).toContain("policy reader rejected; using compiled policy");
+    expect(logged.join("\n")).not.toContain("provider_error");
+    expect(logged.join("\n")).not.toContain("private content");
+  });
+
   it("still produces the reply when the usage_log write itself fails", async () => {
     const db = createMockD1({
       onQuery: (call) => {
@@ -614,11 +637,17 @@ describe("the section-prose rule", () => {
     async (slug) => {
       const db = createMockD1();
       const { ai, calls } = createFakeAi({ text: "the model should never have been asked" });
-      const deps: ComposeReplyDeps = { env: createEnv({ DB: db, AI: ai }), fetch: createFakeFetch().fetch };
+      const readPolicy = vi.fn(async () => ({ document: "must stay unread", source: "compiled" as const, ageMs: 0 }));
+      const deps: ComposeReplyDeps = {
+        env: createEnv({ DB: db, AI: ai }),
+        fetch: createFakeFetch().fetch,
+        readPolicy,
+      };
 
       const result = await composeReply(deps, baseInput(slug));
 
       expect(calls).toHaveLength(0);
+      expect(readPolicy).not.toHaveBeenCalled();
       expect(result.fallback).toBeNull();
       // No call, so nothing to account for — a `usage_log` row here
       // would spend budget on a call that never happened.

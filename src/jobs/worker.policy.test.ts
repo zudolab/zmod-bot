@@ -3,6 +3,8 @@ import { createMockD1 } from "../db/test-support";
 import type { JobRow } from "../db/schema";
 import type { Env } from "../env";
 import type { FetchLike } from "../types";
+import { createStashApi } from "../stash/api";
+import { createFakeStash } from "../stash/test-support";
 import {
   buildPolicyPrBody,
   buildPolicyPrTitle,
@@ -15,7 +17,7 @@ import {
 const REQUEST = "@alice と #123 を参照し、<重要> を明記\n二行目";
 const PR_URL = "https://github.com/zudolab/zmod-bot/pull/123";
 
-function env(): Env {
+function env(overrides: Partial<Env> = {}): Env {
   return {
     DB: createMockD1(),
     AI: {} as Ai,
@@ -32,6 +34,7 @@ function env(): Env {
     CLAUDE_MODEL: "",
     SITE_API_BASE: "https://example.com",
     GITHUB_REPO: "zudolab/zmod-bot",
+    ...overrides,
   };
 }
 
@@ -77,6 +80,96 @@ function acceptedDeps() {
 }
 
 describe("policy_update job orchestration", () => {
+  it("routes policy history through stash and never invokes the GitHub policy seams", async () => {
+    const { fetch, posts } = slackFetch();
+    const now = () => new Date("2026-08-31T00:00:00.000Z");
+    const fake = createFakeStash({
+      now,
+      readToken: `zhs_${"r".repeat(43)}`,
+      writeToken: `zhs_${"w".repeat(43)}`,
+    });
+    const stash = createStashApi({
+      baseUrl: "https://stash.example",
+      stash: "policy",
+      readToken: `zhs_${"r".repeat(43)}`,
+      writeToken: `zhs_${"w".repeat(43)}`,
+      fetch: fake.fetch,
+    });
+    let githubCalls = 0;
+
+    await runJob(
+      env({
+        STASH_BASE_URL: "https://stash.example",
+        STASH_NAME: "policy",
+        STASH_READ_TOKEN: `zhs_${"r".repeat(43)}`,
+        STASH_WRITE_TOKEN: `zhs_${"w".repeat(43)}`,
+      }),
+      job({ raw_text: "<@U_BOT> policy history" }),
+      {
+        fetch,
+        now,
+        stashApi: stash,
+        getPolicyFile: async () => {
+          githubCalls += 1;
+          throw new Error("GitHub must not be called");
+        },
+      },
+    );
+
+    expect(githubCalls).toBe(0);
+    expect(fake.calls.some(({ url }) => url.includes("/history/policy/reply-guidance.md"))).toBe(true);
+    expect(JSON.stringify(posts[0])).toContain("ポリシー履歴");
+    expect(JSON.stringify(posts[0])).toContain("v1");
+    expect(JSON.stringify(posts[0])).not.toContain("Seeded reply guidance");
+  });
+
+  it("refuses stash-only rollback when write routing is absent instead of using GitHub", async () => {
+    const { fetch, posts } = slackFetch();
+    let githubCalls = 0;
+
+    await runJob(env(), job({ raw_text: "<@U_BOT> policy rollback 1" }), {
+      fetch,
+      now: () => new Date(1),
+      getPolicyFile: async () => {
+        githubCalls += 1;
+        throw new Error("GitHub must not be called");
+      },
+    });
+
+    expect(githubCalls).toBe(0);
+    expect(JSON.stringify(posts[0])).toContain("Stashの設定が不足");
+  });
+
+  it("routes rollback without the removed history-head recovery heuristic", async () => {
+    const { fetch } = slackFetch();
+    const now = () => new Date("2026-08-31T00:00:00.000Z");
+    const readToken = `zhs_${"r".repeat(43)}`;
+    const writeToken = `zhs_${"w".repeat(43)}`;
+    const fake = createFakeStash({ now, readToken, writeToken });
+    const stash = createStashApi({ baseUrl: "https://stash.example", stash: "policy", readToken, writeToken, fetch: fake.fetch });
+    const db = createMockD1({
+      onQuery: ({ query, bindings }) => query.includes("INSERT INTO policy_rollback_attempts")
+        ? { results: [{
+            job_id: bindings[0],
+            path: bindings[1],
+            target_version: bindings[2],
+            expected_version: bindings[3],
+            created_at: bindings[4],
+            updated_at: bindings[5],
+          }], meta: { changes: 1 } }
+        : undefined,
+    });
+
+    await runJob(
+      env({ DB: db, STASH_BASE_URL: "https://stash.example", STASH_NAME: "policy", STASH_READ_TOKEN: readToken, STASH_WRITE_TOKEN: writeToken }),
+      job({ raw_text: "<@U_BOT> policy rollback 1" }),
+      { fetch, now, stashApi: stash },
+    );
+
+    expect(fake.calls.some(({ url }) => url.includes("/history/policy/reply-guidance.md"))).toBe(false);
+    expect(fake.calls.filter(({ url }) => url.includes("/rollback/policy/reply-guidance.md"))).toHaveLength(1);
+  });
+
   it("calls each policy seam once and posts one escaped in-thread PR reply", async () => {
     const { fetch, posts } = slackFetch();
     const { getPolicyFile, updatePolicy } = acceptedDeps();

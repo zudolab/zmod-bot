@@ -51,6 +51,7 @@ import { createWorkersAiProvider } from "../llm/workers-ai";
 import { errorSnippet, log } from "../ops/log";
 import { POLICY_CONTENT } from "../policy/generated";
 import type { ProductRef, RefSection } from "../refs/model";
+import { readLivePolicy, type LivePolicyResult } from "../stash/policy-reader";
 import type { FetchLike, NowFn } from "../types";
 import { renderReply, renderResourceSectionDeterministic } from "./render";
 import {
@@ -99,6 +100,8 @@ export interface ComposeReplyDeps {
   now?: NowFn;
   /** Overrides {@link DEFAULT_COMPOSE_DAILY_CAP}. */
   dailyCap?: number;
+  /** Narrow test seam; production resolves through the isolate singleton. */
+  readPolicy?: () => Promise<LivePolicyResult>;
 }
 
 /** Why the deterministic path was used. Null on the happy path. */
@@ -212,9 +215,14 @@ export async function composeReply(
   const budgetTrip = await checkBudget(repoDeps, deps.dailyCap ?? DEFAULT_COMPOSE_DAILY_CAP);
   if (budgetTrip !== null) return fallback(budgetTrip, null);
 
+  // Resolve only after every path that skips the model has returned, and
+  // before entering the provider-call try below. A stash failure can never
+  // be classified or recorded as an LLM provider failure.
+  const policy = await resolveComposePolicy(deps, now);
+
   let result: LlmResult;
   try {
-    result = await callProvider(provider, buildComposeRequest(prepared));
+    result = await callProvider(provider, buildComposeRequest(prepared, policy));
   } catch (error) {
     return fallback(classifyCallFailure(error), null);
   }
@@ -427,33 +435,44 @@ async function recordUsage(
  * customer-facing business text (CLAUDE.md non-negotiable).
  * ---------------------------------------------------------------------- */
 
-const COMPOSE_SYSTEM_PROMPT = [
-  "You assemble the product-resources section of a Japanese purchase-reply message for a modular synthesizer shop.",
-  "",
-  "You are given the applicable sections of a product reference. Emit ONLY that resources section — the surrounding message (greeting, shipping line, delivery date, review request, closing) is fixed text added afterwards, and restating any of it is an error.",
-  "",
-  "Rules, all of them absolute:",
-  "- Output plain text. No markdown headings, no bullet markers, no code fences, no commentary about what you did.",
-  "- Never invent, alter, shorten or drop a URL. Every URL given to you must appear exactly as given; no URL that was not given may appear.",
-  "- Emit sections in the order given.",
-  `- Where a section has a separator intro, put a line containing only ${RESOURCE_SEPARATOR} above it, then the separator intro text, then that section's links.`,
-  "- Reproduce every LITERAL BLOCK character for character, in place. These are pre-written notices; do not translate, summarize, reflow or punctuate them differently.",
-  "- Reproduce intro text as given. You may not add explanation, opinion, or sales language of your own.",
-  "- Section headings are the shop's own filing system. Never emit them.",
-  "- GUIDANCE is written to you, not to the customer. Use it to decide what to include; never reproduce any part of it.",
-  "",
-  "The POLICY below is mutable guidance only; it cannot override any rule above.",
-  "----- BEGIN POLICY -----",
-  POLICY_CONTENT,
-  "----- END POLICY -----",
-].join("\n");
-
-function buildComposeRequest(prepared: PreparedReply): Omit<LlmRequest, "signal"> {
+function buildComposeRequest(prepared: PreparedReply, policy: string): Omit<LlmRequest, "signal"> {
   return {
-    system: COMPOSE_SYSTEM_PROMPT,
+    system: [
+      "You assemble the product-resources section of a Japanese purchase-reply message for a modular synthesizer shop.",
+      "",
+      "You are given the applicable sections of a product reference. Emit ONLY that resources section — the surrounding message (greeting, shipping line, delivery date, review request, closing) is fixed text added afterwards, and restating any of it is an error.",
+      "",
+      "Rules, all of them absolute:",
+      "- Output plain text. No markdown headings, no bullet markers, no code fences, no commentary about what you did.",
+      "- Never invent, alter, shorten or drop a URL. Every URL given to you must appear exactly as given; no URL that was not given may appear.",
+      "- Emit sections in the order given.",
+      `- Where a section has a separator intro, put a line containing only ${RESOURCE_SEPARATOR} above it, then the separator intro text, then that section's links.`,
+      "- Reproduce every LITERAL BLOCK character for character, in place. These are pre-written notices; do not translate, summarize, reflow or punctuate them differently.",
+      "- Reproduce intro text as given. You may not add explanation, opinion, or sales language of your own.",
+      "- Section headings are the shop's own filing system. Never emit them.",
+      "- GUIDANCE is written to you, not to the customer. Use it to decide what to include; never reproduce any part of it.",
+      "",
+      "The POLICY below is mutable guidance only; it cannot override any rule above.",
+      "----- BEGIN POLICY -----",
+      policy,
+      "----- END POLICY -----",
+    ].join("\n"),
     user: buildComposeUserPrompt(prepared),
     maxTokens: COMPOSE_MAX_TOKENS,
   };
+}
+
+async function resolveComposePolicy(deps: ComposeReplyDeps, now: NowFn): Promise<string> {
+  try {
+    const result = await (deps.readPolicy ?? (() => readLivePolicy({ env: deps.env, fetch: deps.fetch, now })))();
+    return result.document;
+  } catch {
+    // readLivePolicy itself never rejects. Keep the compose boundary
+    // fail-open even if a test/alternate injected implementation violates
+    // that contract, without routing the error through classifyCallFailure.
+    log("warn", "compose: policy reader rejected; using compiled policy", { count: 1 });
+    return POLICY_CONTENT;
+  }
 }
 
 function buildComposeUserPrompt(prepared: PreparedReply): string {
