@@ -36,6 +36,7 @@ import migration0003 from "../../migrations/0003_ref_drafts_source.sql?raw";
 import migration0004 from "../../migrations/0004_ref_drafts_origin_job.sql?raw";
 import migration0005 from "../../migrations/0005_jobs_thread_lookup.sql?raw";
 import migration0006 from "../../migrations/0006_jobs_resolved_context.sql?raw";
+import migration0007 from "../../migrations/0007_policy_last_known_good.sql?raw";
 
 /**
  * Every always-applied migration file's SQL text, in order. Add to this
@@ -43,11 +44,18 @@ import migration0006 from "../../migrations/0006_jobs_resolved_context.sql?raw";
  * option below for one that isn't).
  *
  * 0002 (the seed corpus) is deliberately absent — it is the opt-in one.
- * 0003, 0004, 0005, 0006 only ALTER/CREATE INDEX against tables 0001
- * creates, so applying them before an opt-in 0002 is equivalent to
- * production's strict filename order.
+ * 0003, 0004, 0005, 0006, 0007 only ALTER/CREATE against tables 0001
+ * creates or independent storage, so applying them before an opt-in 0002 is
+ * equivalent to production's strict filename order.
  */
-const MIGRATIONS: string[] = [migration0001, migration0003, migration0004, migration0005, migration0006];
+const MIGRATIONS: string[] = [
+  migration0001,
+  migration0003,
+  migration0004,
+  migration0005,
+  migration0006,
+  migration0007,
+];
 
 export interface CreateTestEnvOptions {
   /**
