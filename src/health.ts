@@ -8,6 +8,19 @@
  */
 import type { RouteContext } from "./router";
 import { errorSnippet } from "./ops/log";
+import { POLICY_CONTENT } from "./policy/generated";
+import {
+  readLivePolicy,
+  type LivePolicyResult,
+  type LivePolicySource,
+} from "./stash/policy-reader";
+import type { FetchLike, NowFn } from "./types";
+
+export interface HealthPolicySource {
+  source: LivePolicySource;
+  ageMs: number;
+  configured: boolean;
+}
 
 export interface HealthReport {
   ok: boolean;
@@ -23,17 +36,35 @@ export interface HealthReport {
   migrations: string[];
   /** `SELECT COUNT(*) FROM product_refs` — the actual D1 round-trip this check exists to prove. Null only when even that failed. */
   refCount: number | null;
+  /** Live-policy evidence only. It never contributes to `ok`. */
+  policySource: HealthPolicySource;
   error?: string;
 }
 
+export interface HealthHandlerDeps {
+  fetch?: FetchLike;
+  now?: NowFn;
+  /** Narrow deterministic seam for handler tests. Production uses readLivePolicy. */
+  readPolicy?: () => Promise<LivePolicyResult>;
+}
+
+const COMPILED_POLICY_EVIDENCE: HealthPolicySource = {
+  source: "compiled",
+  ageMs: 0,
+  configured: false,
+};
+
 /** The testable core — takes the D1 binding directly rather than a RouteContext, so it needs no Env/Router fixture to exercise. */
-export async function checkHealth(db: D1Database): Promise<HealthReport> {
+export async function checkHealth(
+  db: D1Database,
+  policySource: HealthPolicySource = COMPILED_POLICY_EVIDENCE,
+): Promise<HealthReport> {
   let refCount: number;
   try {
     const row = await db.prepare("SELECT COUNT(*) AS count FROM product_refs").first<{ count: number }>();
     refCount = row?.count ?? 0;
   } catch (error) {
-    return { ok: false, migrations: [], refCount: null, error: errorSnippet(error) };
+    return { ok: false, migrations: [], refCount: null, policySource, error: errorSnippet(error) };
   }
 
   let migrations: string[] = [];
@@ -44,10 +75,36 @@ export async function checkHealth(db: D1Database): Promise<HealthReport> {
     // Table doesn't exist in this environment — see HealthReport.migrations.
   }
 
-  return { ok: true, migrations, refCount };
+  return { ok: true, migrations, refCount, policySource };
 }
 
-export async function handleHealth(context: RouteContext): Promise<Response> {
-  const report = await checkHealth(context.env.DB);
+export async function handleHealth(context: RouteContext, deps: HealthHandlerDeps = {}): Promise<Response> {
+  const configured = isPolicyConfigured(context.env);
+  const livePolicy = await safeReadPolicy(
+    deps.readPolicy
+      ?? (() => readLivePolicy({
+        env: context.env,
+        fetch: deps.fetch ?? fetch,
+        ...(deps.now === undefined ? {} : { now: deps.now }),
+      })),
+  );
+  const report = await checkHealth(context.env.DB, {
+    source: livePolicy.source,
+    ageMs: livePolicy.ageMs,
+    configured,
+  });
   return Response.json(report, { status: report.ok ? 200 : 500 });
+}
+
+function isPolicyConfigured(env: RouteContext["env"]): boolean {
+  return [env.STASH_BASE_URL, env.STASH_NAME, env.STASH_READ_TOKEN]
+    .every((value) => typeof value === "string" && value.trim() !== "");
+}
+
+async function safeReadPolicy(readPolicy: () => Promise<LivePolicyResult>): Promise<LivePolicyResult> {
+  try {
+    return await readPolicy();
+  } catch {
+    return { document: POLICY_CONTENT, source: "compiled", ageMs: 0 };
+  }
 }

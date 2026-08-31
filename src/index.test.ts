@@ -20,7 +20,12 @@ describe("Worker entry routing", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, migrations: [], refCount: 0 });
+    expect(await response.json()).toEqual({
+      ok: true,
+      migrations: [],
+      refCount: 0,
+      policySource: { source: "compiled", ageMs: 0, configured: false },
+    });
   });
 
   it("404s an unregistered path", async () => {
