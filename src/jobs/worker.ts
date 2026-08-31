@@ -106,6 +106,8 @@ import {
   type PolicyUpdateInput,
   type PolicyUpdateResult,
 } from "../policy/update";
+import { runStashPolicyProposal } from "../policy/proposal";
+import type { StashApi } from "../stash/api";
 
 /** The shape of src/reply/compose.ts's composeReply — injected so tests can fake issue #13's (currently throwing) real implementation. See the module comment. */
 export type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
@@ -123,6 +125,7 @@ export interface RunDeliveryPassDeps {
   getPolicyFile?: GetPolicyFileFn;
   updatePolicy?: UpdatePolicyFn;
   ensurePolicyPr?: EnsurePolicyPrFn;
+  stashApi?: StashApi;
 }
 
 export interface RunDeliveryPassResult {
@@ -151,6 +154,7 @@ export type RunJobDeps = {
   getPolicyFile?: GetPolicyFileFn;
   updatePolicy?: UpdatePolicyFn;
   ensurePolicyPr?: EnsurePolicyPrFn;
+  stashApi?: StashApi;
 };
 
 const POLICY_TITLE_PREFIX = "[policy] ";
@@ -488,6 +492,25 @@ async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
     return buildTextMessagePayload("この操作には管理者権限が必要です。", "この操作には管理者権限が必要です。");
   }
 
+  // Stash is an opt-in route: both the endpoint and write credential must be
+  // present. Any incomplete stash configuration still takes the stash route
+  // once both selectors are non-empty, where the proposal module refuses in
+  // Japanese rather than silently falling back to GitHub.
+  if (typeof env.STASH_BASE_URL === "string" && env.STASH_BASE_URL.length > 0
+      && typeof env.STASH_WRITE_TOKEN === "string" && env.STASH_WRITE_TOKEN.length > 0) {
+    const proposal = await runStashPolicyProposal(
+      {
+        env,
+        fetch: deps.fetch,
+        now: deps.now,
+        stashApi: deps.stashApi,
+        updatePolicy: deps.updatePolicy,
+      },
+      { jobId: job.id, request: parsed.request },
+    );
+    return proposal.payload;
+  }
+
   const githubDeps: GithubApiDeps = { token: env.GITHUB_TOKEN, repo: env.GITHUB_REPO, fetch: deps.fetch };
   const getPolicyFile = deps.getPolicyFile ?? defaultGetPolicyFile;
   const updatePolicy = deps.updatePolicy ?? defaultUpdatePolicy;
@@ -711,6 +734,7 @@ export async function runDeliveryPass(deps: RunDeliveryPassDeps): Promise<RunDel
       getPolicyFile: deps.getPolicyFile,
       updatePolicy: deps.updatePolicy,
       ensurePolicyPr: deps.ensurePolicyPr,
+      stashApi: deps.stashApi,
     });
     if (ok) succeeded++;
     else failed++;

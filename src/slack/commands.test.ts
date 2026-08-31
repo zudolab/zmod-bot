@@ -13,6 +13,7 @@ import {
   ACTION_IDS,
   ARRIVAL_PRESET_ORDER,
   buildMissingRefPayload,
+  buildPolicyReviewPayload,
   computeArrivalPresetOptions,
   decodeArrivalOptionArg,
   decodeButtonValue,
@@ -417,7 +418,53 @@ describe("ACTION_IDS", () => {
       refReject: "ref_reject",
       variantPick: "variant_pick",
       candidatePick: "candidate_pick",
+      policyApprove: "policy_approve",
+      policyReject: "policy_reject",
     });
+  });
+
+  it("renders an inline bounded stash diff with opaque decision values", () => {
+    const id = "chs_0000000000001abcdef12";
+    const unified = `${"+候補の行\n".repeat(20)}<literal>&value`;
+    const payload = buildPolicyReviewPayload({
+      changeSetId: id,
+      diff: {
+        entries: [{ path: "policy/reply-guidance.md", op: "put", stale: false, diff: { state: "ready", unified, truncated: false } }],
+        stale: false,
+        status: "open",
+        truncated: false,
+      },
+    });
+
+    const actions = payload.blocks.at(-1) as { type: string; elements: Array<{ action_id: string; value: string }> };
+    expect(actions.type).toBe("actions");
+    expect(actions.elements.map((button) => button.action_id)).toEqual([ACTION_IDS.policyApprove, ACTION_IDS.policyReject]);
+    expect(actions.elements.map((button) => button.value)).toEqual([`{"v":1,"id":"${id}"}`, `{"v":1,"id":"${id}"}`]);
+
+    const diffText = payload.blocks
+      .filter((block) => (block as { type?: string }).type === "rich_text")
+      .flatMap((block) => (block as { elements: Array<{ elements: Array<{ text: string }> }> }).elements)
+      .flatMap((element) => element.elements)
+      .map((element) => element.text)
+      .join("");
+    expect(diffText).toBe(unified);
+  });
+
+  it("bounds a large diff to Slack's 50 blocks and 3,000 chars per block", () => {
+    const payload = buildPolicyReviewPayload({
+      changeSetId: "chs_0000000000001abcdef12",
+      diff: {
+        entries: [{ path: "policy/reply-guidance.md", op: "put", stale: false, diff: { state: "ready", unified: "x".repeat(1_000_000), truncated: true } }],
+        stale: false,
+        status: "open",
+        truncated: true,
+      },
+    });
+    expect(payload.blocks.length).toBeLessThanOrEqual(50);
+    for (const block of payload.blocks) {
+      const text = (block as { elements?: Array<{ elements?: Array<{ text?: string }> }> }).elements?.[0]?.elements?.[0]?.text;
+      if (text !== undefined) expect(text.length).toBeLessThanOrEqual(3_000);
+    }
   });
 });
 

@@ -17,11 +17,16 @@ import type { Env } from "../env";
 import { parseCommaSeparated } from "../env";
 import {
   buildArrivalDateBlocks,
+  buildConfirmCancelBlocks,
   buildMessagePayload,
   buildMissingRefBlocks,
   escapeMrkdwn,
+  MAX_BLOCKS_PER_MESSAGE,
+  MAX_CHARS_PER_PREFORMATTED_BLOCK,
+  mrkdwnSection,
   type SlackMessagePayload,
 } from "./blocks";
+import type { ChangeSetDiffResult } from "../stash/api";
 
 /* -------------------------------------------------------------------------
  * Command grammar.
@@ -446,6 +451,8 @@ export const ACTION_IDS = {
   refReject: "ref_reject",
   variantPick: "variant_pick",
   candidatePick: "candidate_pick",
+  policyApprove: "policy_approve",
+  policyReject: "policy_reject",
 } as const;
 
 /**
@@ -529,6 +536,89 @@ export function buildCandidatePickerPayload(jobId: number, candidateSlugs: reado
     })),
   });
   return buildMessagePayload([promptBlock, ...pickerBlocks], "複数の製品候補があります。該当するものを選択してください。");
+}
+
+/** One literal diff block. Unlike an mrkdwn section, this preserves every
+ * character that an operator may copy from the review. */
+function policyDiffBlock(content: string): unknown {
+  return {
+    type: "rich_text",
+    elements: [
+      {
+        type: "rich_text_preformatted",
+        elements: [{ type: "text", text: content }],
+      },
+    ],
+  };
+}
+
+/** Splits at code-point boundaries so an oversized stash diff cannot make
+ * the whole Slack message invalid. The marker is the only intentional loss
+ * and is added only when the bounded review surface is exhausted. */
+function boundedPolicyDiffBlocks(text: string, maxBlocks: number): unknown[] {
+  const capacity = maxBlocks * MAX_CHARS_PER_PREFORMATTED_BLOCK;
+  let bounded = text;
+  if (bounded.length > capacity) {
+    const budget = capacity - 1;
+    let kept = "";
+    for (const character of bounded) {
+      if (kept.length + character.length > budget) break;
+      kept += character;
+    }
+    bounded = `${kept}…`;
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  for (const character of bounded) {
+    if (current.length + character.length > MAX_CHARS_PER_PREFORMATTED_BLOCK) {
+      chunks.push(current);
+      current = "";
+    }
+    current += character;
+  }
+  if (current !== "" || chunks.length === 0) chunks.push(current);
+  return chunks.map(policyDiffBlock);
+}
+
+function policyDiffText(diff: ChangeSetDiffResult): string {
+  const entry = diff.entries[0];
+  if (entry?.diff.state === "ready") return entry.diff.unified;
+  // A text put produced by this route always has one ready entry. Keep a
+  // deterministic bounded fallback for a malformed/closed remote response.
+  return "差分を表示できませんでした。";
+}
+
+/**
+ * Renders a stash change-set's candidate-vs-head diff as an inline review.
+ * The button value is deliberately just the change-set id envelope; all
+ * other decision context is recovered by the later interaction route.
+ */
+export function buildPolicyReviewPayload(input: {
+  changeSetId: string;
+  diff: ChangeSetDiffResult;
+}): SlackMessagePayload {
+  const value = encodeButtonValue({ v: 1, id: input.changeSetId });
+  const chromeBlocks = 2; // prompt + approve/reject actions
+  const diffBlocks = boundedPolicyDiffBlocks(
+    policyDiffText(input.diff),
+    MAX_BLOCKS_PER_MESSAGE - chromeBlocks,
+  );
+  return buildMessagePayload(
+    [
+      mrkdwnSection("policy_review_prompt", "ポリシー変更案を確認してください。以下は現在の内容との差分です。"),
+      ...diffBlocks,
+      ...buildConfirmCancelBlocks({
+        blockId: "policy_review_actions",
+        confirmActionId: ACTION_IDS.policyApprove,
+        cancelActionId: ACTION_IDS.policyReject,
+        value,
+        confirmLabel: "承認",
+        cancelLabel: "却下",
+      }),
+    ],
+    "ポリシー変更案を確認してください。",
+  );
 }
 
 export interface MissingRefPayloadInput {
