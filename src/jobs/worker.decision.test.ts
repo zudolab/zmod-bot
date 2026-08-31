@@ -173,13 +173,13 @@ describe("policy decision delivery", () => {
   });
 
   it.each([
-    [409, undefined],
-    [409, [{ path: "policy/reply-guidance.md", expectedVersion: 2 }]],
-    [404, [{ path: "policy/reply-guidance.md", expectedVersion: 2 }]],
-  ] as const)("treats commit-conflict status %i shape %# as terminal and permits one fresh reject", async (status, conflicts) => {
+    [409, "commit-conflict", undefined],
+    [409, "commit-conflict", [{ path: "policy/reply-guidance.md", expectedVersion: 2 }]],
+    [404, "not-found", [{ path: "policy/reply-guidance.md", expectedVersion: 2 }]],
+  ] as const)("treats approval conflict %i/%s shape %# as terminal and permits one fresh reject", async (status, code, conflicts) => {
     await setup();
     await intake("approve");
-    const approve = vi.fn(async () => { throw new StashApiError(status, "commit-conflict", conflicts); });
+    const approve = vi.fn(async () => { throw new StashApiError(status, code, conflicts); });
     const reject = vi.fn(async () => changeSet("rejected"));
     const stash = fakeStash({ approveChangeSet: approve, rejectChangeSet: reject });
     const slack = slackFetch();
@@ -191,15 +191,40 @@ describe("policy decision delivery", () => {
     expect(JSON.stringify(slack.calls[0]?.body.blocks)).toContain(ACTION_IDS.policyReject);
     expect(JSON.stringify(slack.calls[0]?.body.blocks)).not.toContain(ACTION_IDS.policyApprove);
 
+    await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash });
+    expect(approve).toHaveBeenCalledOnce();
+    expect(reject).not.toHaveBeenCalled();
+
     nowMs += 1;
-    const reopened = await intake("reject", `fresh-reject-${status}-${conflicts?.length ?? 0}`, "U_REJECTOR");
+    const reopened = await intake("reject", `fresh-reject-${status}-${code}-${conflicts?.length ?? 0}`, "U_REJECTOR");
     expect(reopened).toMatchObject({ jobCreated: true, decisionEpoch: 2 });
     await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash });
     expect(reject).toHaveBeenCalledOnce();
     expect((await decision(2)).remote_result).toBe("rejected");
     expect(await getPolicyDecisionFence(repo, CHANGE_SET_ID)).toMatchObject({ state: "closed" });
-    const third = await intake("reject", `late-${status}-${conflicts?.length ?? 0}`);
+    const third = await intake("reject", `late-${status}-${code}-${conflicts?.length ?? 0}`);
     expect(third.jobCreated).toBe(false);
+  });
+
+  it.each([
+    ["without conflicts", undefined],
+    ["with an over-limit conflicts list", Array.from({ length: 21 }, (_, index) => ({
+      path: `policy/${index}.md`,
+      expectedVersion: index + 1,
+    }))],
+  ] as const)("keeps approval not-found %s operational and retryable", async (_shape, conflicts) => {
+    await setup();
+    await intake("approve");
+    const approve = vi.fn(async () => { throw new StashApiError(404, "not-found", conflicts); });
+    const stash = fakeStash({ approveChangeSet: approve });
+    const slack = slackFetch();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(await runDeliveryPass({ env, fetch: slack.fetch, now: repo.now, stashApi: stash })).toMatchObject({ failed: 1 });
+    expect(approve).toHaveBeenCalledOnce();
+    expect((await decision()).remote_result).toBe("pending");
+    expect(await getPolicyDecisionFence(repo, CHANGE_SET_ID)).toMatchObject({ state: "open" });
+    expect(JSON.stringify(slack.calls[0]?.body.blocks)).toContain("status=404, code=not-found");
   });
 
   it("preserves expired-open reject asymmetry while approve expires without a mutation", async () => {
