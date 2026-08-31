@@ -25,6 +25,7 @@ import { invalidateLivePolicyCache } from "../stash/policy-reader";
 import type { FetchLike, NowFn, SleepFn } from "../types";
 
 const DECISION_EVENT = /^policy-decision:(chs_\d{13}[0-9a-f]{8}):(\d+)$/;
+const MAX_STASH_CONFLICTS = 20;
 
 export interface PolicyDecisionJobDeps {
   fetch: FetchLike;
@@ -125,7 +126,7 @@ async function handleRemoteError(
   slackDeps: SlackApiDeps,
 ): Promise<PolicyDecisionRow> {
   if (error instanceof StashApiError) {
-    if (error.code === "commit-conflict" && decision.action === "approve") {
+    if (decision.action === "approve" && isApprovalConflict(error)) {
       return persistRemote(repoDeps, decision, "conflict", error.code);
     }
     if (error.code === "change-set-expired") {
@@ -146,6 +147,12 @@ async function handleRemoteError(
     });
   }
   throw error;
+}
+
+function isApprovalConflict(error: StashApiError): boolean {
+  if (error.code === "commit-conflict") return true;
+  const conflictCount = error.conflicts?.length ?? 0;
+  return error.code === "not-found" && conflictCount > 0 && conflictCount <= MAX_STASH_CONFLICTS;
 }
 
 async function persistRemote(
