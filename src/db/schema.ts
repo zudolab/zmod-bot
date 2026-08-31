@@ -185,6 +185,45 @@ export interface PolicyLastKnownGoodRow {
   confirmed_at: number;
 }
 
+/** Proposal lease row; `generation` fences owners across expiry/reclaim. */
+export interface PolicyProposalLeaseRow {
+  path: string;
+  owner_job_id: number;
+  generation: number;
+  expires_at: number;
+}
+
+export type PolicyDecisionAction = "approve" | "reject";
+export type PolicyDecisionFenceState = "open" | "conflict_pending" | "conflict_reopen" | "closed";
+export type PolicyDecisionRemoteResult = "pending" | "applied" | "rejected" | "expired" | "closed" | "conflict";
+export type PolicyDecisionConflictState = "none" | "pending" | "reopenable";
+
+/** Decision/outbox metadata. Policy and upstream response bodies never belong in this row. */
+export interface PolicyDecisionRow {
+  change_set_id: string;
+  decision_epoch: number;
+  action: PolicyDecisionAction;
+  actor_user_id: string;
+  channel_id: string;
+  review_message_ts: string;
+  remote_result: PolicyDecisionRemoteResult;
+  remote_code: string | null;
+  remote_version: number | null;
+  remote_commit_id: string | null;
+  conflict_state: PolicyDecisionConflictState;
+  slack_update_completed: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Single-active-epoch fence for one change set. */
+export interface PolicyDecisionFenceRow {
+  change_set_id: string;
+  active_epoch: number;
+  state: PolicyDecisionFenceState;
+  updated_at: number;
+}
+
 export const TABLE_NAMES = {
   productRefs: "product_refs",
   productRefAliases: "product_ref_aliases",
@@ -194,4 +233,7 @@ export const TABLE_NAMES = {
   jobs: "jobs",
   usageLog: "usage_log",
   policyLastKnownGood: "policy_last_known_good",
+  policyProposalLeases: "policy_proposal_leases",
+  policyDecisionFences: "policy_decision_fences",
+  policyDecisions: "policy_decisions",
 } as const;
