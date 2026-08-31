@@ -174,6 +174,17 @@ export interface UsageLogRow {
   created_at: number;
 }
 
+/** The single stash-confirmed policy document used as the reader's last-known-good fallback. */
+export interface PolicyLastKnownGoodRow {
+  path: string;
+  document: string;
+  version: number;
+  /** The exact response-header ETag, including quotes when supplied by HTTP. */
+  etag: string;
+  /** Epoch milliseconds when this document/version identity was confirmed. */
+  confirmed_at: number;
+}
+
 export const TABLE_NAMES = {
   productRefs: "product_refs",
   productRefAliases: "product_ref_aliases",
@@ -182,4 +193,5 @@ export const TABLE_NAMES = {
   slackEventReceipts: "slack_event_receipts",
   jobs: "jobs",
   usageLog: "usage_log",
+  policyLastKnownGood: "policy_last_known_good",
 } as const;

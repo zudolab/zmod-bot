@@ -26,6 +26,7 @@ describe("migrations/0001_init.sql", () => {
         "slack_event_receipts",
         "jobs",
         "usage_log",
+        "policy_last_known_good",
       ]),
     );
   });
@@ -43,7 +44,7 @@ describe("migrations/0001_init.sql", () => {
     );
   });
 
-  it("0004/0005/0006 apply cleanly: origin_job_id, jobs_thread_lookup, and resolved_context all exist", async () => {
+  it("0004/0005/0006/0007 apply cleanly: origin_job_id, jobs_thread_lookup, resolved_context, and last-known-good all exist", async () => {
     env = await createTestEnv();
 
     const refDraftColumns = await env.db.prepare("PRAGMA table_info(ref_drafts)").all<{ name: string }>();
@@ -51,6 +52,15 @@ describe("migrations/0001_init.sql", () => {
 
     const jobColumns = await env.db.prepare("PRAGMA table_info(jobs)").all<{ name: string }>();
     expect(jobColumns.results.map((row) => row.name)).toEqual(expect.arrayContaining(["resolved_context"]));
+
+    const policyColumns = await env.db.prepare("PRAGMA table_info(policy_last_known_good)").all<{ name: string }>();
+    expect(policyColumns.results.map((row) => row.name)).toEqual([
+      "path",
+      "document",
+      "version",
+      "etag",
+      "confirmed_at",
+    ]);
   });
 
   it("is additive-only: applying it a second time does not throw away data, it fails loudly on the duplicate CREATE TABLE", async () => {
