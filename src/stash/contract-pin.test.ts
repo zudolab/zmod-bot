@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { STASH_ERROR_CODES } from "./api";
 import pin from "./contract-pin.json";
 
 const EXPECTED_ROUTES = [
@@ -65,5 +66,45 @@ describe("stash contract pin", () => {
     expect(pin.errorCodes).toHaveLength(28);
     expect(new Set(pin.errorCodes).size).toBe(28);
     expect(pin.errorCodes).not.toContain("not-implemented");
+  });
+
+  it("guards every client operation's route, credential choice, request surface, and success schema", () => {
+    const operations = [
+      { routeId: "getFile", token: "read", statuses: [200, 304, 400, 401, 404, 429, 500], headers: ["Authorization", "If-None-Match"], query: [], body: [], success: ["ETag", "X-Stash-Version", "path", "version", "body", "deleted"] },
+      { routeId: "createChangeSet", token: "write", statuses: [201, 400, 401, 403, 404, 409, 413, 422, 429, 500], headers: ["Authorization", "Content-Type", "Idempotency-Key"], query: [], body: ["baseVersion", "expiresAt"], success: ["id", "status", "expiresAt", "entries"] },
+      { routeId: "listChangeSets", token: "read", statuses: [200, 400, 401, 404, 429], headers: ["Authorization"], query: ["status", "path", "limit", "after"], body: [], success: ["changeSets", "nextAfter", "total"] },
+      { routeId: "getChangeSet", token: "read", statuses: [200, 400, 401, 404, 429], headers: ["Authorization"], query: [], body: [], success: ["id", "status", "entries"] },
+      { routeId: "getChangeSetDiff", token: "read", statuses: [200, 400, 401, 404, 429, 500], headers: ["Authorization"], query: ["path", "context"], body: [], success: ["entries", "stale", "status", "truncated"] },
+      { routeId: "approveChangeSet", token: "write", statuses: [200, 400, 401, 403, 404, 409, 429, 500], headers: ["Authorization", "Content-Type"], query: [], body: ["author", "message"], success: ["status", "commit"] },
+      { routeId: "rejectChangeSet", token: "write", statuses: [200, 400, 401, 403, 404, 409, 429], headers: ["Authorization", "Content-Type"], query: [], body: ["reason"], success: ["id", "status", "entries"] },
+      { routeId: "getHistory", token: "read", statuses: [200, 400, 401, 404, 429], headers: ["Authorization"], query: ["limit", "before"], body: [], success: ["path", "headVersion", "versions", "nextBefore"] },
+      { routeId: "rollbackFile", token: "write", statuses: [201, 400, 401, 403, 404, 409, 413, 422, 429, 500], headers: ["Authorization", "Content-Type"], query: [], body: ["toVersion", "expectedVersion"], success: ["commitId", "version", "rollbackOf"] },
+    ] as const;
+    expect(operations.map(({ routeId, token }) => [routeId, token])).toEqual([
+      ["getFile", "read"],
+      ["createChangeSet", "write"],
+      ["listChangeSets", "read"],
+      ["getChangeSet", "read"],
+      ["getChangeSetDiff", "read"],
+      ["approveChangeSet", "write"],
+      ["rejectChangeSet", "write"],
+      ["getHistory", "read"],
+      ["rollbackFile", "write"],
+    ]);
+    for (const operation of operations) {
+      const route = pin.routes.find(({ id }) => id === operation.routeId);
+      expect(route).toBeDefined();
+      expect(operation.token).toBe(route?.principal);
+      expect(operation.statuses).toEqual(route?.statuses);
+      expect(operation.headers).toContain("Authorization");
+      expect(operation.success.length).toBeGreaterThan(0);
+      if (operation.token === "write") expect(operation.headers).toContain("Content-Type");
+    }
+    expect(operations.find(({ routeId }) => routeId === "createChangeSet")).toMatchObject({ headers: ["Authorization", "Content-Type", "Idempotency-Key"], body: ["baseVersion", "expiresAt"] });
+    expect(operations.find(({ routeId }) => routeId === "rollbackFile")?.body).toContain("expectedVersion");
+    expect(operations.find(({ routeId }) => routeId === "listChangeSets")?.query).toEqual(["status", "path", "limit", "after"]);
+    expect(pin.routes.flatMap(({ statuses }) => statuses)).toEqual(expect.arrayContaining([400, 401, 403, 404, 409, 413, 422, 429, 500]));
+    expect(pin.errorCodes).toEqual(expect.arrayContaining(EXPECTED_ERROR_CODES));
+    expect(STASH_ERROR_CODES).toEqual(pin.errorCodes);
   });
 });
