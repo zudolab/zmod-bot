@@ -33,7 +33,7 @@ export type {
 
 export const POLICY_PROPOSAL_LEASE_MS = 90_000;
 export const POLICY_DECISION_EVENT_TYPE = "policy_decision_click";
-export const POLICY_DECISION_JOB_KIND: JobKind = "policy_update";
+export const POLICY_DECISION_JOB_KIND: JobKind = "policy_decision";
 
 type D1ChangesResult = { meta: { changes: number; last_row_id?: number } };
 
@@ -350,9 +350,14 @@ export async function recordPolicyDecision(
       .prepare(
         `UPDATE ${TABLE_NAMES.policyDecisionFences}
          SET active_epoch = active_epoch + 1, state = 'open', updated_at = ?
-         WHERE change_set_id = ? AND state = 'conflict_reopen' AND ? = 'reject'`,
+         WHERE change_set_id = ? AND state = 'conflict_reopen' AND ? = 'reject'
+           AND updated_at < ?
+           AND EXISTS (
+             SELECT 1 FROM ${TABLE_NAMES.slackEventReceipts} r
+             WHERE r.event_id = ? AND r.received_at = ?
+           )`,
       )
-      .bind(nowMs, input.changeSetId, input.action),
+      .bind(nowMs, input.changeSetId, input.action, nowMs, receiptId, nowMs),
     db
       .prepare(
         `INSERT INTO ${TABLE_NAMES.policyDecisions}
@@ -362,6 +367,10 @@ export async function recordPolicyDecision(
          SELECT change_set_id, active_epoch, ?, ?, ?, ?, 'pending', 'none', 0, ?, ?
          FROM ${TABLE_NAMES.policyDecisionFences}
          WHERE change_set_id = ? AND state = 'open'
+           AND EXISTS (
+             SELECT 1 FROM ${TABLE_NAMES.slackEventReceipts} r
+             WHERE r.event_id = ? AND r.received_at = ?
+           )
          ON CONFLICT(change_set_id, decision_epoch) DO NOTHING`,
       )
       .bind(
@@ -372,6 +381,8 @@ export async function recordPolicyDecision(
         nowMs,
         nowMs,
         input.changeSetId,
+        receiptId,
+        nowMs,
       ),
     db
       .prepare(
@@ -389,9 +400,13 @@ export async function recordPolicyDecision(
          WHERE d.change_set_id = ?
            AND d.remote_result = 'pending'
            AND f.state = 'open'
+           AND EXISTS (
+             SELECT 1 FROM ${TABLE_NAMES.slackEventReceipts} r
+             WHERE r.event_id = ? AND r.received_at = ?
+           )
          ON CONFLICT(event_id) DO NOTHING`,
       )
-      .bind(eventPrefix, POLICY_DECISION_JOB_KIND, eventPrefix, nowMs, nowMs, input.changeSetId),
+      .bind(eventPrefix, POLICY_DECISION_JOB_KIND, eventPrefix, nowMs, nowMs, input.changeSetId, receiptId, nowMs),
   ]);
 
   const typedResults = results as D1ChangesResult[];
@@ -400,6 +415,9 @@ export async function recordPolicyDecision(
   const conflictReopened = resultChanged(typedResults, 2);
   const decisionCreated = resultChanged(typedResults, 3);
   const jobCreated = resultChanged(typedResults, 4);
+  if (decisionCreated && !jobCreated) {
+    throw new Error("policy decision invariant failed: decision created without job");
+  }
   const fence = await getPolicyDecisionFence(deps, input.changeSetId);
   const decisionEpoch = fence?.active_epoch ?? null;
   const decision = fence ? await getPolicyDecisionAtEpoch(deps, input.changeSetId, fence.active_epoch) : null;
@@ -419,7 +437,7 @@ export async function recordPolicyDecision(
     conflictReopened,
     decisionCreated,
     jobCreated,
-    accepted: decisionCreated,
+    accepted: decisionCreated && jobCreated,
     decisionEpoch,
     eventId,
     decision,

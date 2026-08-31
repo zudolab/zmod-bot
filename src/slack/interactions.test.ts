@@ -23,6 +23,7 @@ const SIGNING_SECRET = "test-signing-secret";
 const BOT_USER_ID = "U0BOT1";
 const NOW_SECONDS = 1_760_000_000;
 const NOW_MS = NOW_SECONDS * 1_000;
+const POLICY_CHANGE_SET_ID = `chs_${"1".repeat(13)}${"a".repeat(8)}`;
 
 const encoder = new TextEncoder();
 
@@ -312,6 +313,69 @@ describe("handleSlackInteractionsWithDeps -- signature gate", () => {
   });
 });
 
+describe("policy decision interaction intake", () => {
+  it.each([
+    "not-json",
+    JSON.stringify({ v: 1, id: "bad" }),
+    JSON.stringify({ v: 1, id: POLICY_CHANGE_SET_ID, a: "extra" }),
+    JSON.stringify({ v: 1, id: POLICY_CHANGE_SET_ID, extra: true }),
+  ])("ignores a non-exact policy envelope %# before any receipt write", async (value) => {
+    const body = formEncodedPayload(blockActionsPayload({
+      actionId: ACTION_IDS.policyApprove,
+      value,
+      userId: "U_ADMIN",
+    }));
+    const db = createMockD1();
+    const { waitUntil, scheduled } = makeWaitUntil();
+    const response = await handleSlackInteractionsWithDeps(
+      await makeSignedRequest(body),
+      baseEnv(),
+      makeDeps({ db, waitUntil }),
+    );
+    expect(response.status).toBe(200);
+    expect(db.calls).toHaveLength(0);
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it("admin-gates before durable intake", async () => {
+    const body = formEncodedPayload(blockActionsPayload({
+      actionId: ACTION_IDS.policyReject,
+      value: encodeButtonValue({ v: 1, id: POLICY_CHANGE_SET_ID }),
+      userId: "U_NOT_ADMIN",
+    }));
+    const db = createMockD1();
+    const { fetch, calls } = createFakeFetch();
+    const { waitUntil, scheduled } = makeWaitUntil();
+    const response = await handleSlackInteractionsWithDeps(
+      await makeSignedRequest(body),
+      baseEnv(),
+      makeDeps({ db, fetch, waitUntil }),
+    );
+    expect(response.status).toBe(200);
+    expect(db.calls).toHaveLength(0);
+    await Promise.all(scheduled);
+    expect(calls.filter((call) => call.url.endsWith("/chat.postEphemeral"))).toHaveLength(1);
+  });
+
+  it("returns retryable 503 when the atomic intake batch fails", async () => {
+    const db = createMockD1();
+    db.batch = async () => { throw new Error("batch down"); };
+    const body = formEncodedPayload(blockActionsPayload({
+      actionId: ACTION_IDS.policyApprove,
+      value: encodeButtonValue({ v: 1, id: POLICY_CHANGE_SET_ID }),
+      userId: "U_ADMIN",
+    }));
+    const { waitUntil, scheduled } = makeWaitUntil();
+    const response = await handleSlackInteractionsWithDeps(
+      await makeSignedRequest(body),
+      baseEnv(),
+      makeDeps({ db, waitUntil }),
+    );
+    expect(response.status).toBe(503);
+    expect(scheduled).toHaveLength(0);
+  });
+});
+
 /* -------------------------------------------------------------------------
  * End-to-end against real D1 (Miniflare) -- idempotency, admin gating,
  * and the arrival_pick / arrival_other click-through.
@@ -370,6 +434,77 @@ describe("handleSlackInteractionsWithDeps -- against real D1", () => {
   }
 
   const GENERAL_PRODUCT_MARKDOWN = `# Test General Widget\n\n- category: general\n- aliases: test general widget\n\n## Notes\n\nfixture\n`;
+
+  it("persists one policy batch before ack and schedules only the genuinely created winner job", async () => {
+    await setup();
+    let batchCalls = 0;
+    const db = new Proxy(env!.db, {
+      get(target, property) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            batchCalls++;
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let deliveryPasses = 0;
+    const runDeliveryPass: NonNullable<SlackInteractionsDeps["runDeliveryPass"]> = async () => {
+      deliveryPasses++;
+      return { claimed: 0, succeeded: 0, failed: 0 };
+    };
+    const value = encodeButtonValue({ v: 1, id: POLICY_CHANGE_SET_ID });
+    const firstBody = formEncodedPayload(blockActionsPayload({
+      actionId: ACTION_IDS.policyApprove,
+      value,
+      userId: "U_ADMIN",
+      actionTs: "1000.1",
+    }));
+    const losingBody = formEncodedPayload(blockActionsPayload({
+      actionId: ACTION_IDS.policyReject,
+      value,
+      userId: "U_OTHER_ADMIN",
+      actionTs: "1000.2",
+    }));
+    const policyEnv = baseEnv({ SLACK_ADMIN_USER_IDS: "U_ADMIN,U_OTHER_ADMIN" });
+    const scheduled: Promise<unknown>[] = [];
+    const waitUntil: WaitUntilFn = (promise) => scheduled.push(promise);
+
+    const first = await handleSlackInteractionsWithDeps(
+      await makeSignedRequest(firstBody),
+      policyEnv,
+      makeDeps({ db, waitUntil, runDeliveryPass }),
+    );
+    expect(batchCalls).toBe(1);
+    const duplicate = await handleSlackInteractionsWithDeps(
+      await makeSignedRequest(firstBody),
+      policyEnv,
+      makeDeps({ db, waitUntil, runDeliveryPass }),
+    );
+    const losing = await handleSlackInteractionsWithDeps(
+      await makeSignedRequest(losingBody),
+      policyEnv,
+      makeDeps({ db, waitUntil, runDeliveryPass }),
+    );
+    expect([first.status, duplicate.status, losing.status]).toEqual([200, 200, 200]);
+    expect(batchCalls).toBe(3);
+    await Promise.all(scheduled);
+    expect(deliveryPasses).toBe(1);
+
+    const receipts = await env!.db
+      .prepare("SELECT event_type FROM slack_event_receipts WHERE event_id LIKE 'interaction:policy_%' ORDER BY event_id")
+      .all<{ event_type: string }>();
+    expect(receipts.results).toEqual([
+      { event_type: "policy_decision_click" },
+      { event_type: "policy_decision_click" },
+    ]);
+    const jobs = await env!.db
+      .prepare("SELECT kind, actor_user_id, state FROM jobs WHERE event_id LIKE 'policy-decision:%'")
+      .all<{ kind: string; actor_user_id: string; state: string }>();
+    expect(jobs.results).toEqual([{ kind: "policy_decision", actor_user_id: "U_ADMIN", state: "pending" }]);
+  });
 
   async function seedGeneralProduct(slug: string) {
     await upsertProductRef(repoDeps, {

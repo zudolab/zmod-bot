@@ -69,6 +69,15 @@ import { openView, postEphemeral, postMessage, postToResponseUrl, updateMessage,
 import { composeReply as defaultComposeReply, type ComposeReplyDeps, type ComposeReplyInput, type ComposeReplyResult } from "../reply/compose";
 import { formatArrivalSchedule } from "../reply/templates";
 import { errorSnippet, log } from "../ops/log";
+import {
+  recordPolicyDecision,
+  type PolicyDecisionAction,
+} from "../stash/coordination-store";
+import {
+  runDeliveryPass as defaultRunDeliveryPass,
+  type RunDeliveryPassDeps,
+  type RunDeliveryPassResult,
+} from "../jobs/worker";
 
 type ComposeReplyFn = (deps: ComposeReplyDeps, input: ComposeReplyInput) => Promise<ComposeReplyResult>;
 
@@ -81,6 +90,8 @@ export interface SlackInteractionsDeps {
   sleep?: SleepFn;
   /** Injected compose step — defaults to the real src/reply/compose.ts composeReply (issue #13). Tests supply a deterministic fake instead of exercising the real LLM/Workers AI call, matching src/jobs/worker.ts's identical injection. */
   composeReply?: ComposeReplyFn;
+  /** Immediate optimization only; durable policy decisions are also reclaimed by cron. */
+  runDeliveryPass?: (deps: RunDeliveryPassDeps) => Promise<RunDeliveryPassResult>;
 }
 
 export async function handleSlackInteractions(context: RouteContext): Promise<Response> {
@@ -244,6 +255,52 @@ async function handleBlockActions(
 ): Promise<Response> {
   const click = extractClickContext(payload);
   if (!click) return ack();
+
+  const policyAction = policyDecisionAction(click.actionId);
+  if (policyAction !== null) {
+    const changeSetId = decodePolicyDecisionValue(click.value);
+    if (changeSetId === null) return ack();
+
+    const slackApiDeps: SlackApiDeps = { botToken: env.SLACK_BOT_TOKEN, fetch: deps.fetch, sleep: deps.sleep };
+    if (!isAdminUser(env, click.userId)) {
+      deps.waitUntil(
+        postEphemeral(slackApiDeps, {
+          channel: click.channelId,
+          user: click.userId,
+          payload: buildTextPayload("この操作には管理者権限が必要です。"),
+        }).catch((error) => log("error", "interactions: policy non-admin refusal failed to post", { error: errorText(error) })),
+      );
+      return ack();
+    }
+
+    const receiptId = `interaction:${click.actionId}:${changeSetId}:${click.actionTs}`;
+    let intake;
+    try {
+      intake = await recordPolicyDecision(repoDeps, {
+        changeSetId,
+        action: policyAction,
+        actorUserId: click.userId,
+        channelId: click.channelId,
+        reviewMessageTs: click.messageTs,
+        receiptId,
+      });
+    } catch {
+      return new Response("policy decision intake unavailable", { status: 503 });
+    }
+
+    if (intake.jobCreated) {
+      const runDeliveryPass = deps.runDeliveryPass ?? defaultRunDeliveryPass;
+      deps.waitUntil(
+        runDeliveryPass({
+          env,
+          fetch: deps.fetch,
+          now: deps.now,
+          sleep: deps.sleep,
+        }).catch((error) => log("error", "interactions: policy delivery pass failed", { error: errorText(error) })),
+      );
+    }
+    return ack();
+  }
 
   // Idempotency — issue #14: key on (action_id, opaque target id,
   // action_ts). The envelope's `id` is the opaque target when the value
@@ -430,6 +487,30 @@ async function handleBlockActions(
   // Unknown/future action_id — ignore, still ack 200 (CLAUDE.md "every
   // ignored event returns 200").
   return ack();
+}
+
+const POLICY_CHANGE_SET_ID = /^chs_\d{13}[0-9a-f]{8}$/;
+
+function policyDecisionAction(actionId: string): PolicyDecisionAction | null {
+  if (actionId === ACTION_IDS.policyApprove) return "approve";
+  if (actionId === ACTION_IDS.policyReject) return "reject";
+  return null;
+}
+
+/** Policy buttons accept exactly `{v:1,id}`; picker carry-forward fields are forbidden here. */
+function decodePolicyDecisionValue(raw: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  const keys = Object.keys(parsed).sort();
+  if (keys.length !== 2 || keys[0] !== "id" || keys[1] !== "v") return null;
+  return parsed.v === 1 && typeof parsed.id === "string" && POLICY_CHANGE_SET_ID.test(parsed.id)
+    ? parsed.id
+    : null;
 }
 
 function errorText(error: unknown): string {
