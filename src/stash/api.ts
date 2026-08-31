@@ -129,6 +129,7 @@ export interface HistoryPage {
     version: number;
     kind: "put" | "delete" | "rollback";
     hash: string | null;
+    rollbackOf: number | null;
     createdAt: string;
   }>;
   nextBefore: number | null;
@@ -165,7 +166,8 @@ export interface StashApi {
   approveChangeSet(input: { id: string; author?: string; message?: string; signal?: AbortSignal }): Promise<ApproveResult>;
   rejectChangeSet(input: { id: string; reason?: string; signal?: AbortSignal }): Promise<ChangeSet>;
   getHistory(input: { path?: string; limit: number; before?: number; signal?: AbortSignal }): Promise<HistoryPage>;
-  rollback(input: { path?: string; toVersion: number; expectedVersion: number; author?: string; message?: string; signal?: AbortSignal }): Promise<RollbackResult>;
+  /** `jobId` enables the policy rollback route's stable idempotency key. */
+  rollback(input: { path?: string; toVersion: number; expectedVersion: number; jobId?: string; author?: string; message?: string; signal?: AbortSignal }): Promise<RollbackResult>;
 }
 
 interface Context {
@@ -532,8 +534,8 @@ export function createStashApi(options: StashApiOptions): StashApi {
         return invalidSuccess(response.status);
       }
       const versions = payload.versions.map((version) => {
-        if (!isObject(version) || !isPositive(version.version) || !["put", "delete", "rollback"].includes(String(version.kind)) || !(version.hash === null || isNonEmptyString(version.hash)) || !isIso(version.createdAt)) return invalidSuccess(response.status);
-        return { version: version.version, kind: version.kind as "put" | "delete" | "rollback", hash: version.hash, createdAt: version.createdAt };
+        if (!isObject(version) || !isPositive(version.version) || !["put", "delete", "rollback"].includes(String(version.kind)) || !(version.hash === null || isNonEmptyString(version.hash)) || !(version.rollbackOf === null || isPositive(version.rollbackOf)) || !isIso(version.createdAt)) return invalidSuccess(response.status);
+        return { version: version.version, kind: version.kind as "put" | "delete" | "rollback", hash: version.hash, rollbackOf: version.rollbackOf, createdAt: version.createdAt };
       });
       return { path, headVersion: payload.headVersion, deleted: payload.deleted, total: payload.total, versions, nextBefore: payload.nextBefore };
     },
@@ -543,6 +545,7 @@ export function createStashApi(options: StashApiOptions): StashApi {
       assertPolicyPath(path);
       assertPositive(input.toVersion, "toVersion");
       assertPositive(input.expectedVersion, "expectedVersion");
+      if (input.jobId !== undefined) assertJobId(input.jobId);
       const body = {
         toVersion: input.toVersion,
         expectedVersion: input.expectedVersion,
@@ -550,7 +553,13 @@ export function createStashApi(options: StashApiOptions): StashApi {
         ...(input.message === undefined ? {} : { message: input.message }),
       };
       const response = await request(ctx, "write", `${stashRoot}/rollback/${encodePath(path)}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: input.signal,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(input.jobId === undefined ? {} : { "Idempotency-Key": `policy-job-${input.jobId}` }),
+        },
+        body: JSON.stringify(body),
+        signal: input.signal,
       });
       if (response.status !== 201) return invalidSuccess(response.status);
       const payload = await parseSuccess(response);

@@ -83,6 +83,7 @@ describe("stash API configuration and assertions", () => {
     await expect(api.listChangeSets({ status: "all", limit: 0 })).rejects.toBeInstanceOf(StashConfigurationError);
     await expect(api.getChangeSet({ id: "chs_bad" })).rejects.toBeInstanceOf(StashConfigurationError);
     await expect(api.rollback({ toVersion: 0, expectedVersion: 1 })).rejects.toBeInstanceOf(StashConfigurationError);
+    await expect(api.rollback({ toVersion: 1, expectedVersion: 1, jobId: "unsafe/id" })).rejects.toBeInstanceOf(StashConfigurationError);
     expect(calls).toEqual([]);
   });
 });
@@ -192,6 +193,20 @@ describe("stash API requests and successes", () => {
     const rollback = await api.rollback({ toVersion: 1, expectedVersion: 2, author: "Takazudo", message: "Restore" });
     expect(rollback).toMatchObject({ version: 3, rollbackOf: 1, identicalToHead: true });
     expect(fake.calls.at(-1)?.body).toBe(JSON.stringify({ toVersion: 1, expectedVersion: 2, author: "Takazudo", message: "Restore" }));
+  });
+
+  it("adds the stable job-derived idempotency key without changing the rollback JSON body", async () => {
+    const { api, fake } = setup();
+    await api.rollback({ toVersion: 1, expectedVersion: 1, jobId: "42" });
+    expect(fake.calls.at(-1)).toMatchObject({
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${WRITE}`,
+        "content-type": "application/json",
+        "idempotency-key": "policy-job-42",
+      },
+      body: JSON.stringify({ toVersion: 1, expectedVersion: 1 }),
+    });
   });
 });
 

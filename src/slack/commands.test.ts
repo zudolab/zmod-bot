@@ -146,6 +146,16 @@ describe("parseCommand", () => {
       expected: { kind: "policy_update", request: " 一行目\n二行目  " },
     },
     {
+      name: "policy history is a stash-only policy command",
+      text: `<@${BOT}> policy history`,
+      expected: { kind: "policy_update", request: "history", policyCommand: { operation: "history" } },
+    },
+    {
+      name: "policy rollback accepts a positive integer version",
+      text: `<@${BOT}> policy rollback 12`,
+      expected: { kind: "policy_update", request: "rollback 12", policyCommand: { operation: "rollback", version: 12 } },
+    },
+    {
       name: "help",
       text: `<@${BOT}> help`,
       expected: { kind: "help" },
@@ -200,6 +210,18 @@ describe("parseCommand", () => {
     expect(parseCommand(`<@${BOT}> policy`, BOT).kind).toBe("unknown");
     expect(parseCommand(`<@${BOT}> policy   `, BOT).kind).toBe("unknown");
     expect(parseCommand(`<@${BOT}> policy\t変更`, BOT)).toMatchObject({ kind: "reply" });
+  });
+
+  it.each(["0", "-1", "+1", "1.5", "1e2", "latest", "1 2"])('rejects invalid policy rollback version "%s"', (version) => {
+    const result = parseCommand(`<@${BOT}> policy rollback ${version}`, BOT);
+    expect(result.kind).toBe("unknown");
+  });
+
+  it("does not turn malformed reserved policy commands into edits", () => {
+    expect(parseCommand(`<@${BOT}> policy history extra`, BOT)).toMatchObject({ kind: "unknown" });
+    expect(parseCommand(`<@${BOT}> policy \thistory`, BOT)).toMatchObject({ kind: "unknown" });
+    expect(parseCommand(`<@${BOT}> policy rollback`, BOT)).toMatchObject({ kind: "unknown" });
+    expect(parseCommand(`<@${BOT}> policy rollback 1 extra`, BOT)).toMatchObject({ kind: "unknown" });
   });
 
   it("usage identifies the policy command as admin-only", () => {

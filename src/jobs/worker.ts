@@ -108,6 +108,7 @@ import {
   type PolicyUpdateResult,
 } from "../policy/update";
 import { runStashPolicyProposal } from "../policy/proposal";
+import { runPolicyHistoryRollback } from "../policy/history-rollback";
 import type { StashApi } from "../stash/api";
 import { runPolicyDecisionJob } from "../policy/decision";
 
@@ -494,6 +495,22 @@ async function buildPolicyJobPayload(env: Env, job: JobRow, deps: RunJobDeps): P
   // but a manually inserted or legacy row must not gain GitHub access.
   if (!isAdminUser(env, job.actor_user_id)) {
     return buildTextMessagePayload("この操作には管理者権限が必要です。", "この操作には管理者権限が必要です。");
+  }
+
+  if (parsed.policyCommand !== undefined) {
+    // History and rollback are stash-only operations. Their own route checks
+    // the complete write configuration and returns a bounded Japanese refusal
+    // when it is absent; importantly, they never reach the GitHub fallback.
+    return runPolicyHistoryRollback(
+      {
+        env,
+        fetch: deps.fetch,
+        now: deps.now,
+        stashApi: deps.stashApi,
+        invalidatePolicyCache: deps.invalidatePolicyCache,
+      },
+      { jobId: job.id, attempts: job.attempts, command: parsed.policyCommand },
+    );
   }
 
   // Stash is an opt-in route: both the endpoint and write credential must be

@@ -168,6 +168,37 @@ describe("createFakeStash", () => {
     expect(reused.status).toBe(422);
   });
 
+  it("fences rollback idempotency by the expected head version", async () => {
+    const api = fake();
+    const file = api.state.files.get(POLICY)!;
+    file.versions.push({ ...file.versions[0]!, version: 2, body: "second", hash: "second" });
+    const headers = { "Idempotency-Key": "policy-job-rollback-1" };
+    const first = await request(api.fetch, `/v1/stashes/policy/rollback/${POLICY}`, {
+      method: "POST",
+      body: { toVersion: 1, expectedVersion: 2 },
+      headers,
+    });
+    expect(first.status).toBe(201);
+    const firstBody = await first.json();
+    const changedExpected = await request(api.fetch, `/v1/stashes/policy/rollback/${POLICY}`, {
+      method: "POST",
+      body: { toVersion: 1, expectedVersion: 3 },
+      headers,
+    });
+    expect(changedExpected.status).toBe(422);
+    expect((await changedExpected.json()) as Record<string, unknown>).toMatchObject({ error: { code: "idempotency-key-reused" } });
+
+    const replay = await request(api.fetch, `/v1/stashes/policy/rollback/${POLICY}`, {
+      method: "POST",
+      body: { toVersion: 1, expectedVersion: 2 },
+      headers,
+    });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("Idempotent-Replayed")).toBe("true");
+    expect(await replay.json()).toEqual(firstBody);
+    expect(file.versions).toHaveLength(3);
+  });
+
   it("serves quoted ETags, empty 304s, null inline bodies, and root-level tombstone current", async () => {
     const api = fake();
     const first = await request(api.fetch, `/v1/stashes/policy/files/${POLICY}`);
