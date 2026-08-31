@@ -4,6 +4,7 @@ import type { Env } from "../env";
 import type { FetchLike } from "../types";
 import {
   StashApiError,
+  StashTransportError,
   createStashApi,
   type HistoryPage,
   type NormalizedStashErrorCode,
@@ -311,7 +312,7 @@ describe("runPolicyHistoryRollback", () => {
     const input = { jobId: 7, command: { operation: "rollback" as const, version: 1 } };
     const deps = { env: env(), fetch, now, stashApi, invalidatePolicyCache: invalidate };
 
-    await expect(runPolicyHistoryRollback(deps, input)).rejects.toMatchObject({ status: 0, code: "unknown" });
+    await expect(runPolicyHistoryRollback(deps, input)).rejects.toBeInstanceOf(StashTransportError);
     await stashApi.rollback({ path: PATH, toVersion: 1, expectedVersion: 2, jobId: "intervening" });
     const replayed = await runPolicyHistoryRollback(deps, input);
 

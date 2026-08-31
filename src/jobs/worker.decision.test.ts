@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../env";
 import type { RepoDeps } from "../db/repos";
 import type { PolicyDecisionRow } from "../db/schema";
-import { StashApiError, type ChangeSet, type StashApi } from "../stash/api";
+import { StashApiError, StashTransportError, type ChangeSet, type StashApi } from "../stash/api";
 import {
   getPolicyDecision,
   getPolicyDecisionFence,
@@ -245,7 +245,7 @@ describe("policy decision delivery", () => {
     let applied = false;
     const approve = vi.fn(async () => {
       applied = true;
-      throw new StashApiError(0, "unknown");
+      throw new StashTransportError();
     });
     const stash = fakeStash({
       getChangeSet: vi.fn(async () => changeSet(applied ? "applied" : "open")),

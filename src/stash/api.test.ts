@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FetchLike } from "../types";
 import {
   StashApiError,
+  StashTransportError,
   StashConfigurationError,
   createStashApi,
   type StashApi,
@@ -309,7 +310,12 @@ describe("stash API runtime validation and bounded errors", () => {
     expect(malformed).toMatchObject({ status: 500, code: "unknown" });
     let networkCalls = 0;
     const network = apiWithFetch((async () => { networkCalls++; throw new Error("credential and body"); }) as FetchLike);
-    await expect(network.getFile()).rejects.toMatchObject({ status: 0, code: "unknown" });
+    const transport = await network.getFile().catch((caught: unknown) => caught);
+    expect(transport).toBeInstanceOf(StashTransportError);
+    expect(transport).toMatchObject({ message: "Stash API transport failed" });
+    expect(transport).not.toHaveProperty("status");
+    expect(transport).not.toHaveProperty("code");
+    expect(transport).not.toHaveProperty("cause");
     expect(networkCalls).toBe(1);
   });
 

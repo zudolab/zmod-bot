@@ -22,6 +22,7 @@ import {
   createStashApi,
   StashApiError,
   StashConfigurationError,
+  StashTransportError,
   type HistoryPage,
   type RollbackResult,
   type StashApi,
@@ -381,7 +382,7 @@ export async function runPolicyHistoryRollback(
     return await runRollback(stash, deps, { jobId: input.jobId, command: input.command });
   } catch (error) {
     if (error instanceof PolicyStashOperationTimeoutError) throw error;
-    if (error instanceof StashApiError && error.status === 0 && error.code === "unknown") throw error;
+    if (error instanceof StashTransportError) throw error;
     if (error instanceof StashConfigurationError || error instanceof StashApiError || error instanceof PolicyHistoryValidationError) {
       return errorPayload(error, input.command.operation);
     }

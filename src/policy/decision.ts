@@ -13,6 +13,7 @@ import { updateMessage, type SlackApiDeps } from "../slack/api";
 import {
   createStashApi,
   StashApiError,
+  StashTransportError,
   type NormalizedStashErrorCode,
   type StashApi,
 } from "../stash/api";
@@ -124,6 +125,7 @@ async function handleRemoteError(
   error: unknown,
   slackDeps: SlackApiDeps,
 ): Promise<PolicyDecisionRow> {
+  if (error instanceof StashTransportError) throw error;
   if (error instanceof StashApiError) {
     if (error.code === "commit-conflict" && decision.action === "approve") {
       return persistRemote(repoDeps, decision, "conflict", error.code);
